@@ -1,0 +1,36 @@
+# freetier limits for providers Brokkr uses that freetier's packaged table does not
+# carry. Merged over the packaged table by pointing FREETIER_PROVIDERS here.
+#
+#   FREETIER_PROVIDERS=dev/freetier/providers.yaml tools/.venv/bin/python tools/freetier_proxy.py
+#
+# Every number carries its source and date. Read the evidence lines before
+# reusing this file on another account: Mistral sets limits per workspace.
+
+hosts:
+  api.mistral.ai: mistral
+
+providers:
+  mistral:
+    unit: tokens
+    evidence: >-
+      Mistral free mode (no payment method), one workspace, read live on 2026-09-24
+      from response headers of a 1-token chat completion per model.
+      codestral-latest: x-ratelimit-limit-req-minute 125,
+      x-ratelimit-limit-tokens-minute 625000. mistral-medium-latest and
+      mistral-small-latest: x-ratelimit-limit-req-minute 0 (not in the free plan).
+      No header and no public Mistral page states a daily or monthly cap; the docs
+      say the free allowance is shown on the workspace's Limits page.
+    # Provider default: nothing is allowed unless a model row below says so.
+    limits: {rpm: 0, rpd: 0, tpm: 0, tpd: 0}
+    models:
+      codestral-latest:
+        # tpd is self-imposed, not Mistral's. It was 3M, sized from practice-task
+        # runs (~25K tokens each); real SWE-bench runs measured 11K-359K tokens
+        # (1.0M for 6 dev runs), so it is now 15M. If the real cap is lower,
+        # Mistral's own 429 parks the run through freetier; it is never retried into.
+        limits: {rpm: 125, rpd: null, tpm: 625000, tpd: 15000000}
+        evidence: >-
+          rpm/tpm from live headers 2026-09-24 (see provider evidence). tpd
+          (assumed; self-imposed): no daily or monthly figure is published.
+          Raised 3M -> 15M on 2026-09-25 01:25 local after measuring real-task
+          token use.

@@ -1,0 +1,9 @@
+.cache/
+*.ext4
+*.squashfs
+vmlinux*
+*.log
+bin/
+tools/.venv/
+__pycache__/
+*.pyc

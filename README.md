@@ -1,0 +1,280 @@
+# brokkr
+
+Autonomous coding agents that run inside Firecracker microVMs, fix failing builds and
+issues, and open a pull request with the evidence attached.
+
+In Norse myth, Brokkr forged Mjölnir while Loki, as a fly, stung him to spoil the work.
+The hammer came out whole anyway. That is the design brief: the agent's code is
+untrusted, the task may be adversarial, and the result still has to be sound.
+
+> **A patch is only evidence if the verifier can be shown to reject a broken one.**
+
+Status: early. The verifier and a first agent work on small fixture tasks with a
+local 7B model. Nothing below is claimed unless a script on disk reproduces it.
+
+## Design
+
+- **Go control plane.** Task intake (failed CI jobs, GitHub issues), queue, sandbox
+  scheduling, the approval gate, and PRs opened as drafts.
+- **Rust sandbox runner.** Boots and restores Firecracker microVMs and runs the agent
+  inside the guest behind seccomp, cgroup quotas, per-task network policy and
+  short-lived credentials.
+- **Verify before anything leaves the sandbox.** Tests, type checks, lint and a
+  security scan. Deliberately broken patches (negative controls) must fail them before
+  a green result counts.
+- **An evidence bundle for every run.** Repro command, diff, logs, trace and hashes,
+  enough for a reviewer to re-run the verdict.
+- **Humans approve every merge and every destructive action.** The agent can only
+  propose.
+- **Pluggable models.** Local (Ollama, vLLM) or hosted, routed by task size.
+
+## Gates passed
+
+| Gate | What it proves | Instrument |
+|---|---|---|
+| 0 | This host can boot a Firecracker microVM; the check fails without `/dev/kvm` | `scripts/kvm-smoke.sh` |
+| 1 | The verifier goes red: of six patches, only the real fix passes | `scripts/gate1.sh` |
+
+Gate 1 on the reference machine:
+
+| Case | What the patch does | Verdict | Caught by |
+|---|---|---|---|
+| none | nothing; the bug is still there | FAIL | tests fail |
+| good | the real fix | **PASS** | (none) |
+| broken | a plausible fix that is wrong for most inputs | FAIL | tests fail |
+| tamper | edits the tests to expect the buggy value | REJECTED | protected files changed; no VM is booted |
+| early-exit | calls `os._exit(0)` on import, before any test runs | FAIL | required tests missing |
+| forge | tries to overwrite the sandbox result and reach the network | FAIL | write denied, network unreachable, tests fail |
+
+The early-exit case is the reason the required-test rule exists. Its test command
+exits **0** with no output, so a verifier that only looks at the exit code, the usual
+approach, would record a pass. Remove the rule (`required_tests: []`) and it does.
+
+## How a patch is verified
+
+1. The repository is copied and the patch applied with `git apply`, which refuses
+   absolute paths and `..`.
+2. Every file under the task's protected paths is hashed before and after. Any
+   difference rejects the patch, whatever its diff headers say.
+3. The patched copy goes onto a throwaway ext4 drive and a fresh microVM boots
+   with it. `brokkr-init` (PID 1, in the read-only root image) runs the test
+   command as `nobody`, with no network device, under a timeout.
+4. Only `brokkr-init` can write the result, and the runner reads it from the drive
+   after the VM has exited.
+5. PASS requires exit 0 **and** a reported pass for every required test.
+6. `evidence.json` records the verdict, the reasons, hashes of the repo, patch and
+   patched tree, the per-test results, the kernel, rootfs and Firecracker versions,
+   and the machine it ran on.
+
+## The agent
+
+`brokkr fix` gives a model a task (an issue, and for practice tasks the failing
+output) and these tools:
+
+| Tool | What it does | Runs code? |
+|---|---|---|
+| `list_dir`, `search`, `read_file` | look around a large repository: one directory at a time, regex search (50 hits), line ranges (300 lines) | no |
+| `replace_in_file` | exact text replacement, tolerant of a uniformly wrong indent | no |
+| `replace_lines` | replace a numbered line range (0.5+) | no |
+| `run_tests` | runs the tests on the current diff in a fresh microVM; on SWE-bench tasks, only the visible ones | in the sandbox only |
+| `run_python` | runs a Python program from the repository root in a fresh microVM (to reproduce the issue); never part of the diff | in the sandbox only |
+| `submit` | ends the run, with the agent's claim that it fixed the task | no |
+
+Edits refuse protected paths (the tests) and paths outside the repository. The
+harness records its version (`HarnessVersion` in `internal/agent/agent.go`, with a
+changelog), and results from different versions are never pooled. Other safeguards:
+
+- **Loops end the run, and it is scored.** Six identical failing calls in a row, or
+  five identical calls with no edit in between, stop the run as `stuck` (0.5, 0.6).
+- **A claimed fix needs a reproduction.** On hidden-test tasks, `fixed=true` with no
+  `run_python` since the last edit gets one reminder (0.4+).
+- **Output that fails to parse is the model's failure.** A malformed model reply is
+  resampled twice and then scored as a failure, not excused as infrastructure.
+
+The model never runs code on the host. When it stops, Brokkr takes the final diff
+and verifies it again from scratch. That verdict is the result; the agent's claim is
+recorded next to it, so **over-claims** (said fixed, wasn't) are counted rather than
+hidden. Each run leaves `transcript.jsonl`, `final.patch`, the evidence for every
+sandboxed test run, and `summary.json`.
+
+Models are reached over the OpenAI-compatible chat API: Ollama, vLLM, llama.cpp or
+a hosted provider (`--model-url`, `BROKKR_API_KEY`).
+
+`scripts/eval.sh` runs the agent K times per task. Before a task is scored, it
+checks that the unpatched repo FAILS and the reference patch PASSES; a task that
+fails either check is reported invalid and excluded.
+
+## Free-tier models through freetier
+
+Hosted free tiers run through [freetier](https://github.com/4ktLuffy/freetier), via a
+small proxy on the Mac (`tools/freetier_proxy.py`). The agent in the VM talks to it as
+an ordinary OpenAI-compatible endpoint and never holds a key.
+
+- **Pacing and one shared ledger.** Every call is paced to the provider's published
+  limits and booked in freetier's machine-wide ledger, shared with any other project
+  on the machine that uses the same key.
+- **A spent allowance stops the eval; it is never scored.** When the allowance is gone,
+  freetier parks the call instead of retrying into 429s. The proxy answers
+  `budget_parked` with the UTC time the allowance returns, `brokkr fix` exits 4, and
+  `scripts/eval.sh` stops, writes `PARTIAL` and scores nothing from the parked run.
+- **The key stays on the Mac.** It comes from `BROKKR_UPSTREAM_API_KEY` or the macOS
+  Keychain, the proxy binds `127.0.0.1` only, and nothing logs the key.
+
+```bash
+security add-generic-password -s brokkr-upstream -a "$USER" -w     # once; prompts for the key
+BROKKR_UPSTREAM_URL=https://openrouter.ai/api/v1 tools/.venv/bin/python tools/freetier_proxy.py
+# in the VM:
+BROKKR_MODEL_URL=http://host.lima.internal:11500/v1 BROKKR_MODEL=<model> scripts/eval.sh
+```
+
+**Which free tier can carry an agent.** Every turn resends the whole conversation, so
+an agent loop spends tokens quickly. On the five fixtures, 15 runs used 507K tokens
+(median 25K per run), and the largest single request was 7.2K tokens. Against
+freetier's limits table:
+
+| Provider (free) | Limits | Fits? |
+|---|---|---|
+| Groq | 8K tokens/min, 200K tokens/day | No. 15 toy runs are 2.5 days of allowance, and real-repo requests exceed the per-minute cap, so they can never be sent |
+| Cloudflare Workers AI | 10K neurons/day (about 300K input tokens) | No |
+| OpenRouter `:free` models | 20 req/min, 50 req/day; no token caps | About 4 runs a day: enough to test the setup |
+| OpenRouter `:free`, after $10 of credit has ever been bought | 20 req/min, 1000 req/day | About 90 runs a day: the only free route that fits |
+
+Tests: `tools/.venv/bin/python -m unittest tools/test_freetier_proxy.py` runs with no key
+and all outbound traffic routed to a dead address, using a throwaway ledger.
+
+## First results (toy tasks, local 7B model)
+
+`brokkr-qwen2.5-7b-16k` (qwen2.5 7B Instruct, Q4, via Ollama, 16K context) on the
+five fixtures, 3 runs each, temperature 0, on the reference machine. The same model
+and tasks were run with the original exact-match edit tool (`strict`) and with the
+indentation-tolerant one (`reindent`):
+
+| Task | strict: PASS | reindent: PASS | reindent: over-claims |
+|---|---|---|---|
+| calc | 3/3 | 3/3 | 0 |
+| inventory | 0/3 | 1/3 | 0 |
+| lru | 0/3 | 2/3 | 1 |
+| slugify | 0/3 | 0/3 | 3 |
+| workdays | 0/3 | 0/3 | 1 |
+| **Total** | **3/15** | **6/15** | **5 of 11 claims** |
+
+How to read it:
+
+- **This is a small sample, not a benchmark.** At temperature 0, repeated runs are
+  close to duplicates, so there are closer to 5 independent data points than 15.
+  3/15 against 6/15 is a direction, not a significant difference.
+- **The verifier is what makes the agent usable.** With the reindent tool, the
+  agent claimed a fix 11 times and was right 6. Without independent
+  verification, 5 of 11 pull requests would have been broken code presented as a
+  fix. In one slugify run the agent saw its own tests fail twice, hit the test
+  budget and submitted `fixed=true` anyway.
+- **An earlier run is invalid and kept as a record**
+  (`results/20260924T115935-qwen2.5_7b/INVALID.md`). Ollama served the model with a
+  4K window and silently truncated prompts; runs in the valid evals reached 7.2K
+  prompt tokens. The agent now stops such runs as infra errors
+  (`scripts/probe-context.py` shows the truncation).
+
+These runs used harness 0.1. Two issues they exposed are fixed in 0.2 (see
+`HarnessVersion` in `internal/agent/agent.go`): a `run_tests` call with no changes no
+longer spends the test budget, and the budget-refusal message no longer tells the
+model to "submit now". Harness 0.2 also records `claim_against_own_tests`: a "fixed"
+claim made when the agent's own last test run had not passed. Results from different
+harness versions are not pooled.
+
+## Real tasks: SWE-bench Verified in Firecracker
+
+`scripts/swe/prepare.py` turns SWE-bench Verified instances into Brokkr tasks. So far
+that means Django 4.0, 4.1 and 4.2: 94 tasks.
+
+- **Environments.** One read-only ext4 image per repo version, mounted at `/opt/env`
+  in the guest. Each follows SWE-bench **v4.1.0**'s specs (pinned; current SWE-bench
+  no longer carries them in code) with two recorded differences: Python comes from
+  uv's standalone builds, since there is no conda on arm64, and the package is not
+  installed, so the working copy is imported through `PYTHONPATH`.
+- **Hidden tests, as in SWE-bench.** The agent sees only the issue text. The verifier
+  applies SWE-bench's test patch itself, after the candidate patch, and requires every
+  FAIL_TO_PASS and PASS_TO_PASS test to pass. The agent's own `run_tests` runs the
+  repository's existing tests only.
+- **Same test names as SWE-bench.** Test logs are read by a Go port of SWE-bench's
+  `parse_log_django`. `scripts/swe/crosscheck_parser.py` runs the original on every
+  validation log and compares the results.
+- **Task validity.** `scripts/swe/validate.sh` requires, per task: no patch → FAIL,
+  gold patch → PASS, and parsers agree. Invalid tasks are listed, never scored.
+- **Dev/held-out split.** `results/swe/split.json` was fixed before any agent ran: 10
+  dev tasks for debugging the harness, 84 held-out. It was chosen by
+  sha256(instance_id).
+- **Sandbox.** The guest has loopback only, for test servers on localhost, and no
+  network device.
+
+## Known limits
+
+Stated plainly, so nobody has to find them:
+
+- **Output forgery by code under test.** The code under test runs in the same
+  process as the test runner, so a patch written specifically to print fake
+  "... ok" lines could fool the parser. It would also be an obvious diff for the
+  human who approves every merge. A trusted out-of-process test reporter is planned.
+- **Standard-library shadowing.** `python3 -m unittest` puts the repo first on
+  `sys.path`, so a patch adding `unittest.py` could replace the runner. Protecting
+  such names, or running tests from a trusted harness, is planned.
+- **No jailer, cgroup quotas or snapshots yet.** Firecracker's default seccomp
+  filters apply. The jailer, cgroups v2 limits and snapshot restore come next.
+- **Two log formats so far.** Python `unittest` and Django's runner (a port of
+  SWE-bench's parser). pytest, Go and Cargo come later.
+- **One repository so far.** The SWE-bench pipeline covers Django 4.x. Other repos
+  need their own environment specs and, for pytest-based ones, a pytest parser.
+- **Toy tasks are only a smoke test.** The five fixtures are small Python bugs
+  written for this project. Results that mean something come from the SWE-bench
+  tasks above.
+
+## Layout
+
+```
+cmd/brokkr/          Go control plane (CLI): brokkr verify, brokkr fix
+internal/verify/     patch staging, protected-path check, verdict, evidence
+internal/agent/      the tool-calling loop and the model's workspace
+internal/model/      OpenAI-compatible chat client
+tools/               freetier proxy (Python) and its tests
+runner/              Rust sandbox runner: one command, one fresh microVM
+guest/brokkr-init    PID 1 inside the guest
+scripts/             gates and image build
+fixtures/            five small buggy repos with task specs and reference patches
+                     (calc also has the adversarial patches used by gate 1)
+results/             eval outputs, one directory per run
+dev/lima.yaml        the reference dev VM
+```
+
+## Development
+
+Firecracker needs Linux with KVM. On an Apple M3 or later running macOS 15+, a Lima
+VM with nested virtualization provides it:
+
+```bash
+limactl start --name brokkr dev/lima.yaml
+limactl shell brokkr
+scripts/kvm-smoke.sh                     # gate 0; expect PASS
+BROKKR_NO_KVM=1 scripts/kvm-smoke.sh     # negative control, expect FAIL
+scripts/build-rootfs.sh                  # guest image with brokkr-init
+```
+
+Build the runner inside the VM, the control plane on the Mac, then run gate 1:
+
+```bash
+# in the VM
+(cd runner && CARGO_TARGET_DIR=~/.cache/brokkr/target cargo build --release)
+# on the Mac
+GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -o bin/brokkr-linux-arm64 ./cmd/brokkr
+# in the VM
+mkdir -p ~/.cache/brokkr/bin && cp bin/brokkr-linux-arm64 ~/.cache/brokkr/bin/brokkr
+scripts/gate1.sh
+```
+
+The reference machine is an Apple M4 (16 GiB) running this Lima VM. Every published
+number names the machine it was measured on. Timings here go through two layers of
+virtualization, so they are slower than bare metal; comparisons are only made between
+runs on the same machine. A bare-metal Linux run is planned and will be reported
+separately, not mixed in.
+
+## License
+
+Apache-2.0 (to be added with the first code).

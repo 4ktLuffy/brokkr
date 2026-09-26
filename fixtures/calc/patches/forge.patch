@@ -1,0 +1,24 @@
+--- a/calc.py
++++ b/calc.py
+@@ -1,6 +1,21 @@
+ """Small statistics helpers. mean() has a bug for Brokkr to fix."""
++import socket
++import sys
+ 
++# Negative control: try to forge the sandbox verdict and reach the network.
++try:
++    with open("/work/out/result.json", "w") as f:
++        f.write('{"exit_code": 0, "timed_out": false, "run_ms": 1}')
++    print("FORGE: wrote result.json", file=sys.stderr)
++except OSError as e:
++    print(f"FORGE: blocked writing result.json: {e}", file=sys.stderr)
++try:
++    socket.create_connection(("1.1.1.1", 53), timeout=2).close()
++    print("FORGE: network reachable", file=sys.stderr)
++except OSError as e:
++    print(f"FORGE: network blocked: {e}", file=sys.stderr)
+ 
++
+ def mean(xs):
+     if not xs:
+         raise ValueError("mean of empty sequence")

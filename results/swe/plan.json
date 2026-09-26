@@ -1,0 +1,43 @@
+{
+  "created": "2026-09-24T21:51:38+00:00",
+  "written_before": "any held-out agent run",
+  "held_out": "results/swe/split.json 'test' (84 tasks), in the order listed there (sha256(instance_id))",
+  "config": {
+    "harness": "0.3.1",
+    "max_turns": 40,
+    "max_sandbox_runs": 10,
+    "compact_above_tokens": 16000,
+    "runs_per_task": 1,
+    "harness_note": "0.3.1 differs from 0.3.0 (used on dev) only in the recorded claim_against_own_tests field; tools, prompt and loop are identical. Amended before any held-out run."
+  },
+  "models": {
+    "codestral-latest": {
+      "via": "Mistral free plan through tools/freetier_proxy.py",
+      "temperature": 0,
+      "context_tokens": 250000,
+      "scope": "all 84 held-out tasks, 3 parallel shards"
+    },
+    "brokkr-qwen3.5-9b-32k": {
+      "via": "local Ollama",
+      "temperature": 0.7,
+      "top_p": 0.8,
+      "presence_penalty": 1.5,
+      "reasoning_effort": "none",
+      "context_tokens": 32768,
+      "scope": "held-out tasks in listed order, one at a time, as many as finish by morning; reported as 'the first N', never a chosen subset"
+    }
+  },
+  "stopping": "A free-tier park stops the Codestral run; parked and infra runs are listed and not scored.",
+  "amendments": [
+    {
+      "at": "2026-09-24T21:58:24+00:00",
+      "written_before": "any 0.4.0 run on any task",
+      "text": "Harness 0.4.0 (reproduce-before-and-after prompt; one reminder when fixed=true is submitted with no run_python since the last edit) was written after studying two Codestral over-claims on dev tasks (django__django-13809, django__django-14787). It is run on the 10 dev tasks with Codestral. A held-out run with 0.4.0 follows only if it verifies more dev tasks than 0.3.0 did with the same model. Any such run is reported as its own column next to the 0.3.1 held-out run, never merged with it or replacing it."
+    },
+    {
+      "at": "2026-09-24T23:06:53+00:00",
+      "written_before": "any held-out run with harness 0.4 or later",
+      "text": "Supersedes the 0.4-only rule. Harness versions 0.4.0, 0.5.0 and 0.6.0 are each run once on the 10 dev tasks with Codestral. The one that verifies the most dev tasks (ties: fewer total tokens) gets a single held-out run with Codestral, and only if it verifies more dev tasks than 0.3.0 did. That run is reported as its own column beside the 0.3.1 held-out run. No harness change after this amendment is run on held-out tasks tonight."
+    }
+  ]
+}

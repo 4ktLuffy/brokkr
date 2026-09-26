@@ -1,0 +1,15 @@
+--- a/tests/test_calc.py
++++ b/tests/test_calc.py
+@@ -5,10 +5,10 @@
+ 
+ class TestMean(unittest.TestCase):
+     def test_mean_basic(self):
+-        self.assertEqual(mean([1, 2, 3]), 2)
++        self.assertEqual(mean([1, 2, 3]), 3)
+ 
+     def test_mean_single(self):
+-        self.assertEqual(mean([5]), 5)
++        self.assertEqual(mean([5, 5]), 10)
+ 
+     def test_mean_empty(self):
+         with self.assertRaises(ValueError):

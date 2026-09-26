@@ -1,0 +1,7 @@
+# qwen2.5:7b with a 16K context window. Ollama's OpenAI-compatible endpoint
+# otherwise runs at its server default (4096 on the reference machine) and
+# silently drops the oldest messages, including the system prompt and the task.
+#
+#   ollama create brokkr-qwen2.5-7b-16k -f dev/ollama/qwen2.5-7b-16k.Modelfile
+FROM qwen2.5:7b
+PARAMETER num_ctx 16384

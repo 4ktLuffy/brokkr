@@ -1,0 +1,58 @@
+#!/bin/bash
+# PID 1 inside every Brokkr microVM. Trusted: it is baked into the read-only root
+# image, and it is the only thing that writes results.
+#
+# The work drive (/dev/vdb, mounted on /work) holds:
+#   repo/     the patched repository            (untrusted code)
+#   cmd       the command to run in repo/
+#   timeout   seconds before the command is killed
+#   out/      results, written here by init only
+#
+# An optional third drive (/dev/vdc) is mounted read-only at /opt/env.
+#
+# The command runs as nobody (65534) and cannot write out/, so code under test
+# cannot forge its own exit code. There is no network device; only loopback.
+
+mount -t proc proc /proc
+mount -t sysfs sys /sys
+mount -t devtmpfs dev /dev 2>/dev/null
+mount -t tmpfs -o mode=1777 tmpfs /tmp
+# Loopback only. Test suites start servers on localhost (Django's admin_scripts
+# downloads from one); without lo even localhost is unreachable. There is still
+# no network device, so nothing outside the VM can be reached.
+ip link set lo up
+# /work is created in the image by scripts/build-rootfs.sh; the root is read-only.
+W=/work
+mount /dev/vdb "$W" || { echo "brokkr-init: cannot mount work drive" >&2; exit 1; }
+# Optional environment drive: interpreter and dependencies, read-only.
+if [[ -b /dev/vdc ]]; then
+  mount -o ro /dev/vdc /opt/env || { echo "brokkr-init: cannot mount env drive" >&2; exit 1; }
+fi
+
+out=$W/out
+mkdir -p "$out"
+chown root:root "$out"
+chmod 0755 "$out"
+chown -R 65534:65534 "$W/repo"
+
+timeout_s=$(cat "$W/timeout" 2>/dev/null || echo 300)
+start=$(date +%s%N)
+(
+  cd "$W/repo"
+  exec setpriv --reuid=65534 --regid=65534 --clear-groups \
+    env -i PATH=/opt/env/bin:/usr/local/bin:/usr/bin:/bin HOME=/tmp LANG=C.UTF-8 LC_ALL=C.UTF-8 \
+    timeout --kill-after=5 "$timeout_s" bash -c "$(cat "$W/cmd")"
+) >"$out/stdout.log" 2>"$out/stderr.log" </dev/null
+code=$?
+end=$(date +%s%N)
+
+timed_out=false
+[[ $code -eq 124 || $code -eq 137 ]] && timed_out=true
+cat >"$out/result.json" <<EOF
+{"exit_code": $code, "timed_out": $timed_out, "run_ms": $(( (end - start) / 1000000 ))}
+EOF
+
+sync
+umount "$W"
+echo 1 >/proc/sys/kernel/sysrq
+echo b >/proc/sysrq-trigger

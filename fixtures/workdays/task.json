@@ -1,0 +1,16 @@
+{
+  "name": "workdays",
+  "issue": "add_business_days() ignores the holidays argument, and with a negative days value it counts forward until it crashes with OverflowError. add_business_days(date(2026, 9, 28), -1) should be 2026-09-25 (the Friday before).",
+  "test_cmd": "python3 -m unittest discover -s tests -t . -v",
+  "timeout_s": 15,
+  "protect": [
+    "tests/"
+  ],
+  "required_tests": [
+    "tests.test_workdays.TestBusinessDays.test_negative",
+    "tests.test_workdays.TestBusinessDays.test_negative_over_weekend",
+    "tests.test_workdays.TestBusinessDays.test_over_weekend",
+    "tests.test_workdays.TestBusinessDays.test_skips_holiday",
+    "tests.test_workdays.TestBusinessDays.test_zero"
+  ]
+}

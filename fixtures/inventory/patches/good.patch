@@ -1,0 +1,18 @@
+--- a/inventory/service.py
++++ b/inventory/service.py
+@@ -17,12 +17,14 @@
+ 
+     def reserve(self, sku, qty):
+         item = self._items.get(sku)
+-        if item is None or item.on_hand < qty:
++        if item is None or item.available < qty:
+             raise OutOfStock(sku)
+         item.reserved += qty
+ 
+     def release(self, sku, qty):
+         item = self._items[sku]
++        if qty > item.reserved:
++            raise ValueError("cannot release more than reserved")
+         item.reserved -= qty
+ 
+     def ship(self, sku, qty):

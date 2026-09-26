@@ -1,0 +1,17 @@
+{
+  "name": "slugify",
+  "issue": "slugify() mangles accented text and can end in a separator. slugify('Caf\u00e9 D\u00e9j\u00e0 Vu') returns 'caf-d-j-vu' instead of 'cafe-deja-vu', and slugify('hello world again', max_len=6) returns 'hello-' instead of 'hello'.",
+  "test_cmd": "python3 -m unittest discover -s tests -t . -v",
+  "timeout_s": 20,
+  "protect": [
+    "tests/"
+  ],
+  "required_tests": [
+    "tests.test_slug.TestSlugify.test_accents_folded",
+    "tests.test_slug.TestSlugify.test_basic",
+    "tests.test_slug.TestSlugify.test_custom_sep",
+    "tests.test_slug.TestSlugify.test_german",
+    "tests.test_slug.TestSlugify.test_max_len_no_trailing_sep",
+    "tests.test_slug.TestSlugify.test_only_symbols"
+  ]
+}

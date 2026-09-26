@@ -1,0 +1,35 @@
+# Brokkr dev VM: arm64 Ubuntu with nested virtualization, so /dev/kvm exists
+# inside the guest and Firecracker can run. Needs Apple M3 or later on macOS 15+.
+#
+#   limactl start --name brokkr dev/lima.yaml
+#
+# This VM is the reference machine. Timings here pay for two layers of
+# virtualization; every published number names the machine it came from.
+
+vmType: vz
+nestedVirtualization: true
+arch: aarch64
+# Sized for a 16 GiB M4: sandbox work is CPU-bound (Django's test modules), and
+# a local 9B model needs ~8 GB on the Mac side, so the VM gets more CPUs and
+# less memory. 5 GiB fits three 1 GiB microVMs plus the guest's own needs.
+cpus: 8
+memory: 5GiB
+disk: 40GiB
+
+images:
+  - location: "https://cloud-images.ubuntu.com/releases/24.04/release/ubuntu-24.04-server-cloudimg-arm64.img"
+    arch: aarch64
+
+mounts:
+  - location: "~/AI Engineering/brokkr"
+    writable: true
+
+provision:
+  - mode: system
+    script: |
+      #!/bin/bash
+      set -eux
+      apt-get update
+      apt-get install -y curl ca-certificates jq e2fsprogs squashfs-tools
+      # Let the default user open /dev/kvm without sudo.
+      usermod -aG kvm "{{.User}}"

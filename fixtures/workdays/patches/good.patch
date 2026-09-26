@@ -1,0 +1,17 @@
+--- a/workdays/cal.py
++++ b/workdays/cal.py
+@@ -4,11 +4,11 @@
+ def add_business_days(start, days, holidays=()):
+     """The date `days` business days after `start` (before it, if negative).
+     Saturdays, Sundays and dates in `holidays` are skipped. `start` is not counted."""
+-    step = 1
+-    remaining = days
++    step = 1 if days >= 0 else -1
++    remaining = abs(days)
+     current = start
+     while remaining:
+         current += timedelta(days=step)
+-        if current.weekday() < 5:
++        if current.weekday() < 5 and current not in holidays:
+             remaining -= 1
+     return current

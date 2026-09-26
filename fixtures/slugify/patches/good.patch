@@ -1,0 +1,13 @@
+--- a/textkit/slug.py
++++ b/textkit/slug.py
+@@ -5,7 +5,9 @@
+ def slugify(text, sep="-", max_len=None):
+     """Lowercase ASCII slug. Accents are folded (e -> e), runs of anything else
+     become one separator, and the result never starts or ends with a separator."""
++    text = unicodedata.normalize("NFKD", text)
++    text = text.encode("ascii", "ignore").decode("ascii")
+     text = re.sub(r"[^a-z0-9]+", sep, text.lower()).strip(sep)
+     if max_len is not None and len(text) > max_len:
+-        text = text[:max_len]
++        text = text[:max_len].rstrip(sep)
+     return text
