@@ -25,7 +25,7 @@ def rows(spec: str) -> tuple[str, dict[str, bool]]:
             continue
         for line in (Path(d) / "runs.jsonl").read_text().splitlines():
             r = json.loads(line)
-            if r.get("invalid") or r.get("verdict") == "ERROR" or r.get("infra_error"):
+            if r.get("invalid") or r.get("verdict") == "ERROR" or r.get("infra_error") or len(r.get("served_by") or {}) > 1:
                 continue
             if r["task"] in out:
                 raise SystemExit(f"{label}: {r['task']} scored twice")

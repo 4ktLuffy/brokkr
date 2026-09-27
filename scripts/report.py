@@ -26,6 +26,12 @@ def load(d: Path | list[Path], name: str | None = None) -> tuple[str, list[dict]
     rows = []
     for x in dirs:
         rows += [json.loads(l) for l in (x / "runs.jsonl").read_text().splitlines() if l.strip()]
+    # A routed run served by more than one backend measures no single model:
+    # never pooled into a model's column (see internal/route).
+    mixed = sum(len(r.get("served_by") or {}) > 1 for r in rows)
+    rows = [r for r in rows if len(r.get("served_by") or {}) <= 1]
+    if mixed:
+        print(f"<!-- {mixed} mixed-backend runs left out -->")
     rows = [r for r in rows if not r.get("invalid")]
     scored_tasks = collections.Counter(r["task"] for r in rows if not is_infra(r))
     dup = [t for t, n in scored_tasks.items() if n > 1]

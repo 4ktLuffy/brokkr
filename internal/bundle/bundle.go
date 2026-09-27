@@ -28,6 +28,19 @@ type summary struct {
 	WallMS       int64          `json:"wall_ms"`
 	Host         string         `json:"host"`
 	Sampling     map[string]any `json:"sampling"`
+	SelfTest     string         `json:"self_test"`
+}
+
+// selfTest is verify.SelfResult as written to selftest/selftest.json.
+type selfTest struct {
+	Verdict     string   `json:"verdict"`
+	Reasons     []string `json:"reasons"`
+	NewFiles    []string `json:"new_test_files"`
+	NewTests    []string `json:"new_tests"`
+	FailBefore  []string `json:"new_tests_failing_before"`
+	Regressions []string `json:"regressions"`
+	RunA        string   `json:"run_a"`
+	RunB        string   `json:"run_b"`
 }
 
 type evidence struct {
@@ -82,13 +95,22 @@ func Write(runDir, outDir string) (*Result, error) {
 	}
 	var ev evidence
 	haveEv := readJSON(filepath.Join(runDir, "final", "evidence.json"), &ev) == nil
+	// Live mode: the agent's own regression test, checked by Brokkr.
+	var st selfTest
+	live := readJSON(filepath.Join(runDir, "selftest", "selftest.json"), &st) == nil
+	hidden := haveEv
+	if live && !haveEv {
+		// No hidden tests: run B of the self-test (the whole patch) carries
+		// the issue text and the sandbox and input hashes.
+		haveEv = readJSON(filepath.Join(runDir, "selftest", "B", "evidence.json"), &ev) == nil
+	}
 	agentSummary := lastSubmitSummary(filepath.Join(runDir, "transcript.jsonl"))
 
 	if err := os.MkdirAll(outDir, 0o755); err != nil {
 		return nil, err
 	}
 	res := &Result{
-		Ready:     sum.Verdict == "PASS" && haveEv && ev.Verdict == "PASS",
+		Ready:     sum.Verdict == "PASS" && haveEv && (ev.Verdict == "PASS" || live && !hidden && st.Verdict == "PASS"),
 		PatchPath: filepath.Join(outDir, "patch.diff"),
 		BodyPath:  filepath.Join(outDir, "pr.md"),
 		Title:     title(sum.Task, ev.Task.Issue),
@@ -99,6 +121,9 @@ func Write(runDir, outDir string) (*Result, error) {
 
 	var b strings.Builder
 	status := "READY FOR REVIEW: verified in a sandbox against the task's tests"
+	if live && !hidden {
+		status = "READY FOR REVIEW: the agent's regression test fails without the fix and passes with it, in a sandbox, and no existing test broke"
+	}
 	if !res.Ready {
 		status = "NOT READY: the patch did not verify (" + strings.Join(sum.Reasons, "; ") + ")"
 	}
@@ -119,10 +144,18 @@ func Write(runDir, outDir string) (*Result, error) {
 	fmt.Fprintf(&b, "### Verification\n\n| | |\n|---|---|\n")
 	fmt.Fprintf(&b, "| Verdict | %s |\n", sum.Verdict)
 	fmt.Fprintf(&b, "| Reasons | %s |\n", strings.Join(sum.Reasons, "; "))
-	if haveEv {
+	if live {
+		fmt.Fprintf(&b, "| Regression test (agent-written) | %s: %s |\n", st.Verdict, strings.Join(st.Reasons, "; "))
+		fmt.Fprintf(&b, "| New tests failing before the fix | %s |\n", orNone(strings.Join(st.FailBefore, ", "), "none"))
+		fmt.Fprintf(&b, "| Existing tests broken | %d |\n", len(st.Regressions))
+		fmt.Fprintf(&b, "| Self-test runs (original + test / whole patch) | %s / %s |\n", st.RunA, st.RunB)
+	}
+	if hidden {
 		req := len(ev.Task.RequiredTests)
 		fmt.Fprintf(&b, "| Required tests passing | %d of %d |\n", req-len(ev.Tests.MissingRequired), req)
 		fmt.Fprintf(&b, "| Hidden test patch | %s |\n", orNone(short(ev.Inputs.TestPatchSHA256), "none"))
+	}
+	if haveEv {
 		fmt.Fprintf(&b, "| Repo tree / patch / patched tree | %s / %s / %s |\n",
 			short(ev.Inputs.RepoTreeSHA256), short(ev.Inputs.PatchSHA256), short(ev.Inputs.PatchedTreeSHA256))
 		network := ev.Sandbox.Network

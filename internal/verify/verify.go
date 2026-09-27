@@ -28,8 +28,9 @@ import (
 
 // VerifierVersion identifies the verification rules and parsers; it is recorded
 // in every evidence file. 0.1 had unittest and django parsers; 0.2 adds sympy;
-// 0.3 adds pass_rule (default unchanged).
-const VerifierVersion = "0.3.0"
+// 0.3 adds pass_rule (default unchanged); 0.4 adds pytest; 0.4.1 refuses a
+// required_only verdict for a patch when there are no required tests.
+const VerifierVersion = "0.4.1"
 
 type Verdict string
 
@@ -38,6 +39,9 @@ const (
 	Fail     Verdict = "FAIL"     // the patch ran and did not fix it
 	Rejected Verdict = "REJECTED" // the patch was refused before running
 	Error    Verdict = "ERROR"    // the sandbox failed; says nothing about the patch
+	// Collected is not a verdict: the tests ran and their statuses are in the
+	// evidence, for deriving required tests (Config.CollectOnly).
+	Collected Verdict = "COLLECTED"
 )
 
 type Task struct {
@@ -51,8 +55,9 @@ type Task struct {
 	// patch: the hidden tests of SWE-bench-style tasks, which the agent never
 	// sees. Relative paths are resolved against the task file's directory.
 	TestPatch string `json:"test_patch,omitempty"`
-	// Parser reads the test log: "unittest" (default), or "django" / "sympy",
-	// ports of SWE-bench v4.1.0's parse_log_django / parse_log_sympy, whose
+	// Parser reads the test log: "unittest" (default), or "django" / "sympy" /
+	// "pytest", ports of SWE-bench v4.1.0's parse_log_django / parse_log_sympy /
+	// parse_log_pytest, whose
 	// test names SWE-bench's FAIL_TO_PASS and PASS_TO_PASS lists use verbatim.
 	Parser string `json:"parser,omitempty"`
 	// EnvImage is a read-only ext4 image mounted at /opt/env in the guest,
@@ -64,7 +69,12 @@ type Task struct {
 	// releases have tests that error on Python 3.9 even with the gold patch,
 	// and SWE-bench leaves them out of the required lists.
 	PassRule string `json:"pass_rule,omitempty"`
-	MemMiB   int    `json:"mem_mib,omitempty"`
+	// Live marks a task judged by the agent's own regression test (SelfTest)
+	// rather than, or in addition to, hidden tests. NewTestsDir is where that
+	// test must be created (as a new test_brokkr_*.py file).
+	Live        bool   `json:"live,omitempty"`
+	NewTestsDir string `json:"new_tests_dir,omitempty"`
+	MemMiB      int    `json:"mem_mib,omitempty"`
 }
 
 type Evidence struct {
@@ -97,6 +107,9 @@ type TestResults struct {
 type Config struct {
 	Runner string // path to brokkr-runner
 	Host   string // label for the machine, recorded in the evidence
+	// CollectOnly runs the tests and records per-test statuses but gives no
+	// verdict (Collected). Used to derive required tests; never for scoring.
+	CollectOnly bool
 }
 
 // Run verifies patchPath (empty for "no patch") against the repo at repoDir and
@@ -225,6 +238,8 @@ func Run(cfg Config, task Task, repoDir, patchPath, outDir string) (*Evidence, e
 		passed, failed = parseDjango(string(append(stdout, stderr...)))
 	case "sympy":
 		passed, failed = parseSympy(string(append(stdout, stderr...)))
+	case "pytest":
+		passed, failed = parsePytest(string(append(stdout, stderr...)))
 	default:
 		return finish(Error, "unknown parser "+task.Parser)
 	}
@@ -235,11 +250,21 @@ func Run(cfg Config, task Task, repoDir, patchPath, outDir string) (*Evidence, e
 		}
 	}
 
+	if cfg.CollectOnly {
+		return finish(Collected, fmt.Sprintf("collect-only: %d passed, %d failed (exit %d)", len(passed), len(failed), rep.Guest.ExitCode))
+	}
+
 	var reasons []string
 	switch task.PassRule {
 	case "", "exit_and_required", "required_only":
 	default:
 		return finish(Error, "unknown pass_rule "+task.PassRule)
+	}
+	if task.PassRule == "required_only" && len(task.RequiredTests) == 0 && patchPath != "" {
+		// With no required tests and no exit-code check, nothing could fail:
+		// a verdict would be meaningless. (The unpatched baseline run is still
+		// allowed, to derive required tests from; see scripts/gh/derive_tests.py.)
+		return finish(Error, "pass_rule required_only with no required tests: nothing to verify")
 	}
 	if rep.Guest.TimedOut {
 		reasons = append(reasons, fmt.Sprintf("test command timed out after %ds", timeout))

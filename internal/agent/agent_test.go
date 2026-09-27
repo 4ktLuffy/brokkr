@@ -3,11 +3,14 @@ package agent
 import (
 	"context"
 	"fmt"
+	"github.com/4ktLuffy/brokkr/internal/route"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -406,5 +409,221 @@ func TestSyntaxWarningReachesModel(t *testing.T) {
 	sum := runWithFakeModelTask(t, srv.URL, func(*verify.Task) {})
 	if sum.SyntaxErrorsIntroduced != 1 {
 		t.Fatalf("syntax_errors_introduced = %d, want 1", sum.SyntaxErrorsIntroduced)
+	}
+}
+
+func hiddenTestPatch(t *testing.T) func(*verify.Task) {
+	t.Helper()
+	tp := filepath.Join(t.TempDir(), "test.patch")
+	os.WriteFile(tp, []byte("--- /dev/null\n+++ b/tests/test_new.py\n@@ -0,0 +1 @@\n+x = 1\n"), 0o644)
+	return func(task *verify.Task) { task.TestPatch = tp }
+}
+
+// 0.8: three reproductions without an edit earn one commit nudge.
+func TestCommitNudgeAfterReproductions(t *testing.T) {
+	py := `{"name":"run_python","arguments":"{\"code\":\"print(1)\"}"}`
+	srv := scriptedServer(t, py, py, py, `{"name":"submit","arguments":"{\"fixed\":false}"}`)
+	defer srv.Close()
+	sum := runWithFakeModelTask(t, srv.URL, hiddenTestPatch(t))
+	if sum.CommitNudges != 1 {
+		t.Fatalf("commit_nudges = %d, want 1", sum.CommitNudges)
+	}
+}
+
+// Negative control: once the agent has edited, reproductions are normal work.
+func TestNoCommitNudgeAfterAnEdit(t *testing.T) {
+	py := `{"name":"run_python","arguments":"{\"code\":\"print(1)\"}"}`
+	edit := `{"name":"replace_in_file","arguments":"{\"path\":\"a.py\",\"old_text\":\"x = 1\",\"new_text\":\"x = 2\"}"}`
+	srv := scriptedServer(t, edit, py, py, py, `{"name":"submit","arguments":"{\"fixed\":false}"}`)
+	defer srv.Close()
+	sum := runWithFakeModelTask(t, srv.URL, hiddenTestPatch(t))
+	if sum.CommitNudges != 0 {
+		t.Fatalf("commit_nudges = %d after an edit, want 0", sum.CommitNudges)
+	}
+}
+
+// Negative control: tasks with visible tests (fixtures) are not nudged.
+func TestNoCommitNudgeOnVisibleTestTasks(t *testing.T) {
+	py := `{"name":"run_python","arguments":"{\"code\":\"print(1)\"}"}`
+	srv := scriptedServer(t, py, py, py, `{"name":"submit","arguments":"{\"fixed\":false}"}`)
+	defer srv.Close()
+	sum := runWithFakeModel(t, srv.URL, 0)
+	if sum.CommitNudges != 0 {
+		t.Fatalf("commit_nudges = %d on a visible-test task, want 0", sum.CommitNudges)
+	}
+}
+
+// 0.9 live mode: create_file makes new files only; under a protected
+// directory, only a new test_brokkr_*.py regression test.
+func TestCreateFileRules(t *testing.T) {
+	dir := t.TempDir()
+	orig, work := filepath.Join(dir, "a"), filepath.Join(dir, "b")
+	for _, d := range []string{orig, work} {
+		os.MkdirAll(filepath.Join(d, "tests"), 0o755)
+		os.WriteFile(filepath.Join(d, "tests/test_m.py"), []byte("x\n"), 0o644)
+		os.WriteFile(filepath.Join(d, "m.py"), []byte("x\n"), 0o644)
+	}
+	w := &workspace{root: work, orig: orig, protect: []string{"tests/"}, newTests: "tests/"}
+	cases := []struct {
+		path string
+		ok   bool
+	}{
+		{"tests/test_brokkr_issue.py", true},
+		{"tests/sub/test_brokkr_deep.py", true},
+		{"newmod.py", true},
+		// Negative controls.
+		{"tests/test_m.py", false},            // overwrite an existing test
+		{"tests/test_other.py", false},        // a new test not named test_brokkr_*
+		{"tests/conftest.py", false},          // fixtures would change every test
+		{"m.py", false},                       // create_file never overwrites
+		{"../escape.py", false},               // outside the repository
+		{"tests/test_brokkr_issue.py", false}, // exists now
+	}
+	for _, c := range cases {
+		out, refused := w.call("create_file", map[string]any{"path": c.path, "content": "def test_a():\n    assert True\n"})
+		if ok := strings.HasPrefix(out, "ok:"); ok != c.ok {
+			t.Errorf("create_file %s: %q (refused=%v), want ok=%v", c.path, out, refused, c.ok)
+		}
+	}
+	if b, _ := os.ReadFile(filepath.Join(work, "tests/test_m.py")); string(b) != "x\n" {
+		t.Fatalf("existing test changed: %q", b)
+	}
+	if got := w.newTestFiles(); !reflect.DeepEqual(got, []string{"tests/sub/test_brokkr_deep.py", "tests/test_brokkr_issue.py"}) {
+		t.Fatalf("newTestFiles = %v", got)
+	}
+}
+
+// Tasks that are not live do not get create_file: 0.9 behaves as 0.8 there.
+func TestCreateFileOnlyInLiveMode(t *testing.T) {
+	for _, tl := range toolDefs(false) {
+		if tl.Function.Name == "create_file" {
+			t.Fatal("create_file offered on a non-live task")
+		}
+	}
+	w := &workspace{root: t.TempDir(), orig: t.TempDir()}
+	if out, refused := w.call("create_file", map[string]any{"path": "x.py", "content": ""}); !refused {
+		t.Fatalf("create_file on a non-live workspace: %q", out)
+	}
+	n := 0
+	for _, tl := range toolDefs(true) {
+		if tl.Function.Name == "create_file" {
+			n++
+		}
+	}
+	if n != 1 {
+		t.Fatalf("live tools have %d create_file", n)
+	}
+}
+
+// runLive runs a live task end to end with a scripted model and a fake
+// sandbox that reports tests from the staged repository: the regression test
+// passes only when the fix (x = 2) is in a.py.
+func runLive(t *testing.T, calls ...string) *Summary {
+	t.Helper()
+	srv := scriptedServer(t, calls...)
+	defer srv.Close()
+	dir := t.TempDir()
+	repo := filepath.Join(dir, "repo")
+	os.MkdirAll(filepath.Join(repo, "tests"), 0o755)
+	os.WriteFile(filepath.Join(repo, "a.py"), []byte("x = 1\n"), 0o644)
+	os.WriteFile(filepath.Join(repo, "tests/test_m.py"), []byte("def test_old(): pass\n"), 0o644)
+	runner := filepath.Join(dir, "runner.sh")
+	os.WriteFile(runner, []byte(`#!/bin/sh
+while [ $# -gt 0 ]; do case "$1" in --out) out=$2;; --repo) repo=$2;; esac; shift; done
+mkdir -p "$out"; : > "$out/stderr.log"
+{ echo "PASSED tests/test_m.py::test_old"
+  if [ -f "$repo/tests/test_brokkr_x.py" ]; then
+    if grep -q "x = 2" "$repo/a.py"; then echo "PASSED tests/test_brokkr_x.py::test_x"; else echo "FAILED tests/test_brokkr_x.py::test_x - assert"; fi
+  fi
+  [ -f "$repo/tests/test_brokkr_y.py" ] && echo "PASSED tests/test_brokkr_y.py::test_y"; } > "$out/stdout.log"
+echo '{"guest":{"exit_code":0,"timed_out":false,"run_ms":1},"error":null}'
+`), 0o755)
+	task := verify.Task{Name: "live", TestCmd: "pytest tests/test_m.py", Protect: []string{"tests/"}, Parser: "pytest",
+		Live: true, NewTestsDir: "tests/"}
+	sum, err := Run(context.Background(), Config{
+		Model:  &model.Client{BaseURL: srv.URL, Model: "fake"},
+		Verify: verify.Config{Runner: runner, Host: "test"}, MaxTurns: 12, MaxTestRuns: 3,
+	}, task, repo, filepath.Join(dir, "out"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return sum
+}
+
+const (
+	liveTest   = `{"name":"create_file","arguments":"{\"path\":\"tests/test_brokkr_x.py\",\"content\":\"def test_x(): ...\\n\"}"}`
+	liveFix    = `{"name":"replace_in_file","arguments":"{\"path\":\"a.py\",\"old_text\":\"x = 1\",\"new_text\":\"x = 2\"}"}`
+	liveSubmit = `{"name":"submit","arguments":"{\"fixed\":false}"}`
+)
+
+func TestLiveModePassesWithTestAndFix(t *testing.T) {
+	sum := runLive(t, liveTest, liveFix, liveSubmit)
+	if sum.Verdict != verify.Pass || sum.SelfTest != verify.Pass {
+		t.Fatalf("verdict %s self_test %s: %v", sum.Verdict, sum.SelfTest, sum.Reasons)
+	}
+}
+
+// Negative controls: a fix with no test, and a test with no fix.
+func TestLiveModeFailsWithoutARegressionTest(t *testing.T) {
+	if sum := runLive(t, liveFix, liveSubmit); sum.Verdict != verify.Fail {
+		t.Fatalf("verdict %s, want FAIL: %v", sum.Verdict, sum.Reasons)
+	}
+}
+
+func TestLiveModeFailsWhenTheTestDoesNotPassAfter(t *testing.T) {
+	if sum := runLive(t, liveTest, liveSubmit); sum.Verdict != verify.Fail {
+		t.Fatalf("verdict %s, want FAIL: %v", sum.Verdict, sum.Reasons)
+	}
+}
+
+// A test that passes on the unfixed code is no evidence, even with a real fix
+// beside it.
+func TestLiveModeFailsWhenTheTestPassesBefore(t *testing.T) {
+	always := `{"name":"create_file","arguments":"{\"path\":\"tests/test_brokkr_y.py\",\"content\":\"def test_y(): pass\\n\"}"}`
+	sum := runLive(t, always, liveFix, liveSubmit)
+	if sum.Verdict != verify.Fail || !strings.Contains(strings.Join(sum.Reasons, " "), "already passes without the fix") {
+		t.Fatalf("verdict %s, want FAIL because the test passes before: %v", sum.Verdict, sum.Reasons)
+	}
+}
+
+// A routed run: the primary is parked, so the whole run is served by the
+// fallback, and the summary says so.
+func TestRoutedRunFallsBackAndRecordsIt(t *testing.T) {
+	parked := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(429)
+		io.WriteString(w, `{"error":{"type":"budget_parked","message":"spent","resume_at":"2099-01-01T00:00:00Z"}}`)
+	}))
+	defer parked.Close()
+	srv := scriptedServer(t,
+		`{"name":"replace_in_file","arguments":"{\"path\":\"a.py\",\"old_text\":\"x = 1\",\"new_text\":\"x = 2\"}"}`,
+		`{"name":"submit","arguments":"{\"fixed\":false}"}`,
+	)
+	defer srv.Close()
+	r := route.New([]route.Backend{
+		{Name: "codestral", BaseURL: parked.URL, Model: "codestral", ContextTokens: 256000},
+		{Name: "qwen", BaseURL: srv.URL, Model: "qwen", ContextTokens: 32768},
+	})
+	dir := t.TempDir()
+	repo := filepath.Join(dir, "repo")
+	os.MkdirAll(filepath.Join(repo, "tests"), 0o755)
+	os.WriteFile(filepath.Join(repo, "a.py"), []byte("x = 1\n"), 0o644)
+	runner := filepath.Join(dir, "runner.sh")
+	os.WriteFile(runner, []byte(`#!/bin/sh
+while [ $# -gt 0 ]; do [ "$1" = --out ] && out=$2; shift; done
+mkdir -p "$out"; echo "test_a (tests.t.C.test_a) ... FAIL" > "$out/stderr.log"; : > "$out/stdout.log"
+echo '{"guest":{"exit_code":1,"timed_out":false,"run_ms":1},"error":null}'
+`), 0o755)
+	sum, err := Run(context.Background(), Config{
+		Model: r.Primary().Client(), Router: r,
+		Verify: verify.Config{Runner: runner, Host: "test"}, MaxTurns: 12, MaxTestRuns: 1, ContextTokens: 256000,
+	}, verify.Task{Name: "t", TestCmd: "true", Protect: []string{"tests/"}, RequiredTests: []string{"tests.t.C.test_a"}}, repo, filepath.Join(dir, "out"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sum.ParkedUntil != "" || sum.Infra != "" || sum.StopReason != "agent submitted" {
+		t.Fatalf("parked=%q infra=%q stop=%q", sum.ParkedUntil, sum.Infra, sum.StopReason)
+	}
+	if sum.ServedBy["qwen"] != 2 || len(sum.RouteSwitches) != 1 || sum.RouteSwitches[0].To != "qwen" {
+		t.Fatalf("served_by %v switches %+v", sum.ServedBy, sum.RouteSwitches)
 	}
 }

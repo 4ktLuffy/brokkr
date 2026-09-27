@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/4ktLuffy/brokkr/internal/model"
+	"github.com/4ktLuffy/brokkr/internal/route"
 	"github.com/4ktLuffy/brokkr/internal/verify"
 )
 
@@ -51,10 +52,27 @@ import (
 //	       256K on a 4% drop in Mistral's count). Not run on held-out tonight.
 //	0.7.0  after an edit to a .py file, the file is parsed (ast.parse, never
 //	       executed) and a SyntaxError is reported in the tool result
-const HarnessVersion = "0.7.0"
+//	0.8.0  commit nudges when nothing has been edited (at a third and two
+//	       thirds of the turns, and after 3 reproductions); a turn/sandbox
+//	       budget footer on every tool result; prompt: commit early, and a
+//	       fix may need the same change in several places (results/ANALYSIS.md)
+//	0.9.0  live mode (task.live): a create_file tool for a new regression test,
+//	       and the run is judged by that test (verify.SelfTest). Tasks that are
+//	       not live see the same tools and prompts as 0.8.0.
+const HarnessVersion = "0.9.0"
+
+// Chatter is what the agent needs from a model: *model.Client, or a
+// *route.Router over several.
+type Chatter interface {
+	Chat(ctx context.Context, msgs []model.Message, tools []model.Tool) (model.Message, model.Usage, error)
+}
 
 type Config struct {
-	Model       *model.Client
+	// Model is the model (with Router set: the primary backend's client, used
+	// for the summary's model and sampling fields).
+	Model *model.Client
+	// Router, when set, serves every model call; see package route.
+	Router      *route.Router
 	Verify      verify.Config
 	MaxTurns    int // model calls
 	MaxTestRuns int // run_tests calls, each a microVM boot
@@ -109,11 +127,19 @@ type Summary struct {
 	SubmitReminders        int            `json:"submit_reminders"`
 	LoopWarnings           int            `json:"loop_warnings"`
 	SyntaxErrorsIntroduced int            `json:"syntax_errors_introduced"`
+	CommitNudges           int            `json:"commit_nudges"`
 	Budget                 map[string]int `json:"budget"`
 	PromptTok              int            `json:"prompt_tokens"`
 	OutputTok              int            `json:"completion_tokens"`
 	WallMS                 int64          `json:"wall_ms"`
-	PatchLines             int            `json:"patch_changed_lines"`
+	// Routed runs only: turns per backend, and each fallback. More than one
+	// backend makes a mixed run, left out of model comparisons.
+	ServedBy      map[string]int `json:"served_by,omitempty"`
+	RouteSwitches []route.Switch `json:"route_switches,omitempty"`
+	// Live mode only: the verdict of the agent's own regression test.
+	SelfTest        verify.Verdict `json:"self_test,omitempty"`
+	SelfTestReasons []string       `json:"self_test_reasons,omitempty"`
+	PatchLines      int            `json:"patch_changed_lines"`
 }
 
 const systemPrompt = `You are fixing an issue in a code repository. You change source files; you cannot change tests.
@@ -127,10 +153,16 @@ How to work:
 
 Passing the existing tests is not evidence of a fix: those tests did not catch this issue in the first place. Hidden tests written for this issue will judge your change.
 
+Commit early: once you have found the likely cause, make an edit, then check it and refine. Reading and reproducing without editing does not fix anything, and your turns are limited (each tool result shows how many are left). A fix may need the same change in more than one place: search for other uses of what you change.
+
 Rules:
 - Paths marked protected cannot be edited. Fix the code, not the tests.
 - Sandbox runs (run_tests, run_python) are limited; use them for real checks.
 - Keep going until the issue is fixed or you are sure you cannot fix it.`
+
+// livePrompt replaces the hidden-tests paragraph for live tasks, where the
+// agent's own regression test is the evidence.
+const livePrompt = `No tests have been written for this issue. You write one: use create_file to add a new test file %stest_brokkr_<short_name>.py containing pytest tests that fail on the current code because of this issue, and pass once it is fixed. Brokkr will run your test on the original code (it must fail) and on your change (it must pass), and check that no existing test breaks. A test that passes without your fix proves nothing. You cannot change existing tests.`
 
 func Run(ctx context.Context, cfg Config, task verify.Task, repoDir, outDir string) (*Summary, error) {
 	start := time.Now()
@@ -169,15 +201,28 @@ func Run(ctx context.Context, cfg Config, task verify.Task, repoDir, outDir stri
 	logMsg := func(m model.Message) { b, _ := json.Marshal(m); tr.Write(append(b, '\n')) }
 
 	ws := &workspace{root: work, orig: orig, protect: task.Protect, strict: cfg.StrictEdits}
-	tools := toolDefs()
+	if task.Live {
+		ws.newTests = task.NewTestsDir
+		if ws.newTests == "" {
+			return nil, errors.New("live task has no new_tests_dir")
+		}
+	}
+	tools := toolDefs(task.Live)
 
 	// Reproduce first, so the model starts from the real failure.
-	baseline, err := verify.Run(cfg.Verify, task, repoDir, "", filepath.Join(outDir, "baseline"))
+	// A live task without hidden tests has nothing that must fail yet: its
+	// baseline only records what the existing tests do.
+	bc := cfg.Verify
+	bc.CollectOnly = task.Live && task.TestPatch == ""
+	baseline, err := verify.Run(bc, task, repoDir, "", filepath.Join(outDir, "baseline"))
 	if err != nil {
 		return nil, fmt.Errorf("baseline: %w", err)
 	}
-	if baseline.Verdict != verify.Fail {
+	if baseline.Verdict != verify.Fail && !(bc.CollectOnly && baseline.Verdict == verify.Collected) {
 		return nil, fmt.Errorf("baseline verdict is %s, expected FAIL: nothing to fix, or the sandbox is broken", baseline.Verdict)
+	}
+	if bc.CollectOnly && len(baseline.Tests.Passed) == 0 {
+		return nil, errors.New("live baseline: no existing test passed, so regressions could not be detected (check test_cmd)")
 	}
 
 	issue := task.Issue
@@ -185,7 +230,12 @@ func Run(ctx context.Context, cfg Config, task verify.Task, repoDir, outDir stri
 		issue = "The test suite fails. Make it pass."
 	}
 	var first string
-	if task.TestPatch != "" {
+	if task.Live {
+		// Live: the issue, and the agent's own test as the evidence. Hidden
+		// tests, if the task has them (historical evaluation), stay hidden.
+		first = fmt.Sprintf("Issue %s:\n\n%s\n\n"+livePrompt+" run_tests runs the repository's existing tests for the affected area plus your new test files. Protected (read-only): %s",
+			task.Name, issue, task.NewTestsDir, strings.Join(task.Protect, ", "))
+	} else if task.TestPatch != "" {
 		// Hidden tests: as in SWE-bench, the agent gets the issue and nothing
 		// from the tests that will judge it. The baseline above ran them only
 		// to confirm the task fails as it should.
@@ -205,8 +255,21 @@ func Run(ctx context.Context, cfg Config, task verify.Task, repoDir, outDir stri
 
 	attempt := 0
 	prevPrompt, prevEst := 0, 0
+	var chat Chatter = cfg.Model
+	window := func() int { return cfg.ContextTokens }
+	switches := func() int { return 0 }
+	if cfg.Router != nil {
+		chat = cfg.Router
+		// The conversation may grow to the largest backend's window: the
+		// router moves it there when it outgrows the current one.
+		window = cfg.Router.MaxContext
+		switches = func() int { return len(cfg.Router.Switches) }
+	}
 	checkedSinceEdit, reminded := false, false
 	lastFailSig, repeats := "", 0
+	editsMade := 0                // successful edits so far
+	pythonCalls := 0              // run_python attempts, including ones refused for budget
+	nudged := map[string]bool{}   // commit nudges already given
 	sinceEdit := map[string]int{} // identical non-sandbox calls since the last successful edit
 	comp := &compactor{High: cfg.CompactAbove, Keep: 3}
 loop:
@@ -217,13 +280,14 @@ loop:
 		}
 		view := comp.view(msgs)
 		est := estimateTokens(view)
-		if cfg.ContextTokens > 0 && est > cfg.ContextTokens {
+		if w := window(); w > 0 && est > w {
 			sum.StopReason = "context window full"
 			sum.Infra = fmt.Sprintf("conversation is about %d tokens, over the %d-token window; the server would truncate it",
-				est, cfg.ContextTokens)
+				est, w)
 			break
 		}
-		reply, usage, err := cfg.Model.Chat(ctx, view, tools)
+		switchesBefore := switches()
+		reply, usage, err := chat.Chat(ctx, view, tools)
 		// A malformed reply is resampled up to twice; the sampling differs
 		// each time. Only then does it end the run, scored as a failure.
 		for retry := 0; retry < 2; retry++ {
@@ -232,7 +296,7 @@ loop:
 				break
 			}
 			sum.MalformedReplies++
-			reply, usage, err = cfg.Model.Chat(ctx, view, tools)
+			reply, usage, err = chat.Chat(ctx, view, tools)
 		}
 		sum.Turns++
 		sum.PromptTok += usage.PromptTokens
@@ -245,7 +309,16 @@ loop:
 		// the served window nothing can have been cut, and small drops in the
 		// reported count are the provider's own accounting (seen with Mistral
 		// at 13K of 256K, harness 0.6.0).
-		nearWindow := cfg.ContextTokens > 0 && est*5 >= cfg.ContextTokens*4
+		// A switch to another backend changes the tokenizer: its count is
+		// not comparable with the last one.
+		if switches() != switchesBefore {
+			prevPrompt, prevEst = 0, 0
+		}
+		cur := window()
+		if cfg.Router != nil {
+			cur = cfg.Router.Current().ContextTokens
+		}
+		nearWindow := cur > 0 && est*5 >= cur*4
 		truncated := nearWindow && usage.PromptTokens > 0 && usage.PromptTokens < prevPrompt && est >= prevEst
 		shrankFrom := prevPrompt
 		prevPrompt, prevEst = usage.PromptTokens, est
@@ -296,7 +369,7 @@ loop:
 			sig := name + "\x00" + call.Function.Arguments
 			switch name {
 			case "submit":
-				if claimed, _ := args["fixed"].(bool); claimed && task.TestPatch != "" && !checkedSinceEdit && !reminded {
+				if claimed, _ := args["fixed"].(bool); claimed && (task.TestPatch != "" || task.Live) && !checkedSinceEdit && !reminded {
 					// One reminder, once per run: a fix claimed without re-running
 					// a reproduction since the last edit is a guess.
 					reminded = true
@@ -329,6 +402,7 @@ loop:
 				result, v = ws.runTests(cfg.Verify, task, filepath.Join(outDir, fmt.Sprintf("attempt-%d", attempt)))
 				sum.LastOwnTest = string(v)
 			case "run_python":
+				pythonCalls++
 				if sum.TestRuns+sum.PythonRuns >= cfg.MaxTestRuns {
 					result = "refused: sandbox run budget exhausted. Call submit; set fixed=true only if your checks showed the fix works."
 					sum.Refusals++
@@ -346,7 +420,7 @@ loop:
 			default:
 				var refused bool
 				result, refused = ws.call(name, args)
-				if (name == "replace_in_file" || name == "replace_lines") && strings.HasPrefix(result, "ok:") {
+				if isEdit(name) && strings.HasPrefix(result, "ok:") {
 					checkedSinceEdit = false
 					path, _ := args["path"].(string)
 					if msg := ws.syntaxError(path); msg != "" {
@@ -369,7 +443,7 @@ loop:
 			} else {
 				lastFailSig, repeats = "", 0
 			}
-			if edited := (name == "replace_in_file" || name == "replace_lines") && strings.HasPrefix(result, "ok:"); edited {
+			if edited := isEdit(name) && strings.HasPrefix(result, "ok:"); edited {
 				sinceEdit = map[string]int{}
 			} else if !strings.HasPrefix(result, "error:") && name != "run_tests" && name != "run_python" && name != "submit" {
 				sinceEdit[sig]++ // failing calls are rule (a)'s business
@@ -392,6 +466,30 @@ loop:
 				result += fmt.Sprintf("\n\nYou have made this exact call %d times since your last edit and its result has not changed. Stop repeating it: decide on a change and make it, or submit with fixed=false.", same)
 				sum.LoopWarnings++
 			}
+			if isEdit(name) && strings.HasPrefix(result, "ok:") {
+				editsMade++
+			}
+			// Commit nudges: the most common failure is never editing at
+			// all (results/ANALYSIS.md). Each fires at most once.
+			if editsMade == 0 && (task.TestPatch != "" || task.Live) {
+				var why string
+				switch {
+				case sum.Turns >= 2*cfg.MaxTurns/3 && !nudged["two_thirds"]:
+					nudged["two_thirds"] = true
+					why = "two thirds of your turns are used"
+				case sum.Turns >= cfg.MaxTurns/3 && !nudged["one_third"]:
+					nudged["one_third"] = true
+					why = "a third of your turns are used"
+				case pythonCalls >= 3 && !nudged["reproduced"]:
+					nudged["reproduced"] = true
+					why = "you have reproduced the problem several times"
+				}
+				if why != "" {
+					sum.CommitNudges++
+					result += "\n\nYou have not changed any file yet, and " + why + ". You know enough to try: make your best edit now (replace_in_file or replace_lines), then check it with run_python and refine. An imperfect edit you can test is better than none."
+				}
+			}
+			result += fmt.Sprintf("\n[turn %d of %d; sandbox runs %d of %d]", sum.Turns, cfg.MaxTurns, sum.TestRuns+sum.PythonRuns, cfg.MaxTestRuns)
 			tm := model.Message{Role: "tool", Content: result, ToolCallID: call.ID, Name: name}
 			msgs = append(msgs, tm)
 			logMsg(tm)
@@ -399,6 +497,9 @@ loop:
 	}
 
 	sum.CompactBatches = comp.Batches
+	if cfg.Router != nil {
+		sum.ServedBy, sum.RouteSwitches = cfg.Router.ServedBy, cfg.Router.Switches
+	}
 
 	// The verdict comes from a fresh verification of the final diff.
 	patch, err := ws.diff()
@@ -415,9 +516,37 @@ loop:
 			sum.PatchLines++
 		}
 	}
-	if patch == "" {
+	switch {
+	case patch == "":
 		sum.Verdict, sum.Reasons = verify.Fail, []string{"agent produced no change"}
-	} else {
+	case task.Live:
+		// The agent's own test is the evidence (verify.SelfTest). When the
+		// task also has hidden tests (evaluating live mode on fixed issues),
+		// they judge the code part of the patch, and the self-test verdict
+		// is recorded beside it: do the two agree?
+		st, err := verify.SelfTest(cfg.Verify, task, repoDir, patchPath, filepath.Join(outDir, "selftest"))
+		if err != nil {
+			return nil, fmt.Errorf("self-test: %w", err)
+		}
+		sum.SelfTest, sum.SelfTestReasons = st.Verdict, st.Reasons
+		sum.Verdict, sum.Reasons = st.Verdict, st.Reasons
+		if task.TestPatch != "" {
+			_, code, _ := verify.SplitNewTests(patch, task.NewTestsDir, repoDir)
+			cp := filepath.Join(outDir, "final-code.patch")
+			if err := os.WriteFile(cp, []byte(code), 0o644); err != nil {
+				return nil, err
+			}
+			if code == "" {
+				sum.Verdict, sum.Reasons = verify.Fail, []string{"agent changed no code (only added tests)"}
+			} else {
+				ev, err := verify.Run(cfg.Verify, task, repoDir, cp, filepath.Join(outDir, "final"))
+				if err != nil {
+					return nil, fmt.Errorf("final verify: %w", err)
+				}
+				sum.Verdict, sum.Reasons = ev.Verdict, ev.Reasons
+			}
+		}
+	default:
 		ev, err := verify.Run(cfg.Verify, task, repoDir, patchPath, filepath.Join(outDir, "final"))
 		if err != nil {
 			return nil, fmt.Errorf("final verify: %w", err)
@@ -429,20 +558,8 @@ loop:
 	return sum, os.WriteFile(filepath.Join(outDir, "summary.json"), append(b, '\n'), 0o644)
 }
 
-// estimateTokens over-estimates a conversation's prompt size: about three
-// characters per token, plus a fixed allowance for the tool schemas and chat
-// template. Erring high stops a run early, which is reported; erring low would
-// let a truncated run be scored, which is not.
-func estimateTokens(msgs []model.Message) int {
-	chars := 0
-	for _, m := range msgs {
-		chars += len(m.Content) + 16
-		for _, c := range m.ToolCalls {
-			chars += len(c.Function.Name) + len(c.Function.Arguments) + 16
-		}
-	}
-	return chars/3 + 800
-}
+// estimateTokens: see model.EstimateTokens.
+func estimateTokens(msgs []model.Message) int { return model.EstimateTokens(msgs) }
 
 func testOutput(dir string, ev *verify.Evidence) string {
 	var b strings.Builder
@@ -466,7 +583,8 @@ func tail(s string, n int) string {
 type workspace struct {
 	root, orig string
 	protect    []string
-	strict     bool // see Config.StrictEdits
+	strict     bool   // see Config.StrictEdits
+	newTests   string // live mode: where new regression tests may be created
 }
 
 var errRefused = errors.New("refused")
@@ -508,6 +626,12 @@ func (w *workspace) call(name string, args map[string]any) (string, bool) {
 		out, err = w.replace(str("path"), str("old_text"), str("new_text"))
 	case "replace_lines":
 		out, err = w.replaceLines(str("path"), num(args, "start_line"), num(args, "end_line"), str("new_text"))
+	case "create_file":
+		if w.newTests == "" {
+			err = fmt.Errorf("%w: unknown tool %q", errRefused, name)
+			break
+		}
+		out, err = w.createFile(str("path"), str("content"))
 	default:
 		err = fmt.Errorf("%w: unknown tool %q", errRefused, name)
 	}
@@ -515,6 +639,11 @@ func (w *workspace) call(name string, args map[string]any) (string, bool) {
 		return "error: " + err.Error(), errors.Is(err, errRefused)
 	}
 	return out, false
+}
+
+// isEdit reports whether a tool changes the working copy.
+func isEdit(name string) bool {
+	return name == "replace_in_file" || name == "replace_lines" || name == "create_file"
 }
 
 func num(args map[string]any, k string) int {
@@ -732,6 +861,55 @@ func (w *workspace) replace(p, oldText, newText string) (string, error) {
 	return fmt.Sprintf("ok: replaced 1 occurrence in %s%s\n%s", rel, note, around(s, newText, 3)), nil
 }
 
+// createFile creates a new file; it never overwrites. Under a protected path
+// only a live-mode regression test may be created: a new test_brokkr_*.py
+// file under the task's new-tests directory. Existing tests stay read-only.
+func (w *workspace) createFile(p, content string) (string, error) {
+	full, rel, err := w.resolve(p)
+	if err != nil {
+		return "", err
+	}
+	if _, err := os.Lstat(full); err == nil {
+		return "", fmt.Errorf("%w: %s already exists; create_file makes new files only (edit existing ones with replace_in_file)", errRefused, rel)
+	}
+	if w.protected(rel) && !verify.IsNewTestFile(w.newTests, rel, w.orig) {
+		return "", fmt.Errorf("%w: %s is protected; new tests go in a new %stest_brokkr_<name>.py file", errRefused, rel, w.newTests)
+	}
+	// Parent directories must not escape the repository through a symlink.
+	for d := filepath.Dir(rel); d != "." && d != "/"; d = filepath.Dir(d) {
+		if fi, err := os.Lstat(filepath.Join(w.root, d)); err == nil && fi.Mode()&fs.ModeSymlink != 0 {
+			return "", fmt.Errorf("%w: %s is a symlink", errRefused, d)
+		}
+	}
+	if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+		return "", err
+	}
+	if err := os.WriteFile(full, []byte(content), 0o644); err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("ok: created %s (%d lines)", rel, strings.Count(content, "\n")+1), nil
+}
+
+// newTestFiles lists the regression tests created so far, for run_tests.
+func (w *workspace) newTestFiles() []string {
+	if w.newTests == "" {
+		return nil
+	}
+	var out []string
+	_ = filepath.WalkDir(filepath.Join(w.root, w.newTests), func(p string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return nil
+		}
+		rel, _ := filepath.Rel(w.root, p)
+		rel = filepath.ToSlash(rel)
+		if verify.IsNewTestFile(w.newTests, rel, w.orig) {
+			out = append(out, rel)
+		}
+		return nil
+	})
+	return out
+}
+
 // syntaxError parses a Python file after an edit and returns the parser's
 // message, or "" if it parses, is not Python, or no parser is available.
 // ast.parse only parses: nothing in the repository is executed on the host.
@@ -920,6 +1098,20 @@ func (w *workspace) runTests(vc verify.Config, task verify.Task, dir string) (st
 	if err := os.WriteFile(pp, []byte(patch), 0o644); err != nil {
 		return "error: " + err.Error(), verify.Error
 	}
+	if task.Live {
+		// The existing tests for the area plus the agent's new tests,
+		// statuses only. Protection is the workspace's job here (the new
+		// files sit under a protected directory); the final self-test
+		// checks it again.
+		task.TestPatch, task.RequiredTests, task.Protect = "", nil, nil
+		task.TestCmd = strings.TrimSpace(task.TestCmd + " " + strings.Join(w.newTestFiles(), " "))
+		vc.CollectOnly = true
+		ev, err := verify.Run(vc, task, w.orig, pp, dir)
+		if err != nil {
+			return "error: " + err.Error(), verify.Error
+		}
+		return fmt.Sprintf("(existing tests plus your new tests; %d passed, %d failed)\n", len(ev.Tests.Passed), len(ev.Tests.Failed)) + testOutput(dir, ev), verify.Verdict("VISIBLE_" + string(ev.Verdict))
+	}
 	if task.TestPatch != "" {
 		// The hidden tests stay hidden: run the repository's own tests for
 		// the affected area, judged by exit code alone.
@@ -1031,7 +1223,7 @@ func (w *workspace) diff() (string, error) {
 	return string(out), nil
 }
 
-func toolDefs() []model.Tool {
+func toolDefs(live bool) []model.Tool {
 	obj := func(props map[string]any, req ...string) map[string]any {
 		if props == nil {
 			props = map[string]any{}
@@ -1045,7 +1237,7 @@ func toolDefs() []model.Tool {
 	t := func(name, desc string, params map[string]any) model.Tool {
 		return model.Tool{Type: "function", Function: model.ToolFunction{Name: name, Description: desc, Parameters: params}}
 	}
-	return []model.Tool{
+	tools := []model.Tool{
 		t("list_dir", "List one directory (not recursive). Directories end with a slash.",
 			obj(map[string]any{"path": s("directory relative to the repository root; '.' for the root")})),
 		t("search", "Search files for a regular expression (RE2 syntax). Returns path:line: text for up to 50 matches.",
@@ -1081,4 +1273,15 @@ func toolDefs() []model.Tool {
 				"summary": s("one sentence on what you changed"),
 			}, "fixed")),
 	}
+	if live {
+		// After replace_lines, so the edit tools sit together.
+		tools = append(tools[:5:5], append([]model.Tool{
+			t("create_file", "Create a new file (never overwrites). Use it for your regression test: a new test_brokkr_<name>.py in the tests directory named in the task.",
+				obj(map[string]any{
+					"path":    s("path relative to the repository root"),
+					"content": s("the complete file content"),
+				}, "path", "content")),
+		}, tools[5:]...)...)
+	}
+	return tools
 }

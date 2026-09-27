@@ -105,6 +105,34 @@ type ErrMalformedReply struct{ Detail string }
 
 func (e *ErrMalformedReply) Error() string { return "malformed model reply: " + e.Detail }
 
+// ErrHTTP is any other non-200 answer. The router uses the status to tell a
+// backend that is down or rate-limited (429, 5xx: try another) from a request
+// the backend refused (other 4xx: trying elsewhere would hide a bug).
+type ErrHTTP struct {
+	Model  string
+	Status int
+	Body   string
+}
+
+func (e *ErrHTTP) Error() string {
+	return fmt.Sprintf("model %s: HTTP %d: %.300s", e.Model, e.Status, e.Body)
+}
+
+// EstimateTokens over-estimates a conversation's prompt size: about three
+// characters per token, plus a fixed allowance for the tool schemas and chat
+// template. Erring high stops a run early, which is reported; erring low would
+// let a truncated run be scored, which is not.
+func EstimateTokens(msgs []Message) int {
+	chars := 0
+	for _, m := range msgs {
+		chars += len(m.Content) + 16
+		for _, c := range m.ToolCalls {
+			chars += len(c.Function.Name) + len(c.Function.Arguments) + 16
+		}
+	}
+	return chars/3 + 800
+}
+
 // malformedMarkers identify server errors caused by the model's own output.
 // Ollama reports an unparseable tool call as HTTP 500 with the parser error.
 var malformedMarkers = []string{"XML syntax error", "error parsing tool call", "failed to parse", "invalid character"}
@@ -182,7 +210,7 @@ func (c *Client) Chat(ctx context.Context, msgs []Message, tools []Tool) (Messag
 		}
 	}
 	if resp.StatusCode != http.StatusOK {
-		return Message{}, Usage{}, fmt.Errorf("model %s: HTTP %d: %.300s", c.Model, resp.StatusCode, raw)
+		return Message{}, Usage{}, &ErrHTTP{Model: c.Model, Status: resp.StatusCode, Body: string(raw)}
 	}
 	var out struct {
 		Choices []struct {

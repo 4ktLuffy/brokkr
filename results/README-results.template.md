@@ -20,7 +20,10 @@ STAT_NOTE
 
 **SymPy, held-out (65 valid tasks):** Codestral, harness 0.6.1: SYMPY_061, complete.
 
-Across both repositories, 167 of the 169 prepared tasks passed the validity check:
+**pydantic, held-out (26 tasks, every fix merged after both models were released,
+so they cannot have seen it):** Codestral, harness 0.7.0: PYD_CODESTRAL.
+
+Across Django and SymPy, 167 of the 169 prepared tasks passed the validity check:
 Django 92/94 and SymPy 75/75. The Brokkr ports of SWE-bench's log parsers agree with
 the originals on every validation log (338 logs).
 <!-- RESULTS:END -->

@@ -127,6 +127,13 @@ func TestPassRule(t *testing.T) {
 		{"exit_and_required", both, 0, Pass},
 		{"bogus", both, 0, Error},
 	}
+	// No required tests under required_only: a patched run is an error, never a pass.
+	empty := Task{Name: "t", TestCmd: "x", PassRule: "required_only"}
+	patch := filepath.Join(t.TempDir(), "p.patch")
+	os.WriteFile(patch, []byte("--- a/a.py\n+++ b/a.py\n@@ -1 +1 @@\n-x\n+y\n"), 0o644)
+	if ev, _ := Run(Config{Runner: stubRunner(t, 0, both)}, empty, repo, patch, t.TempDir()); ev.Verdict != Error {
+		t.Errorf("required_only with no required tests: verdict %s, want ERROR", ev.Verdict)
+	}
 	for _, c := range cases {
 		task := Task{Name: "t", TestCmd: "x", RequiredTests: []string{"m.C.test_a", "m.C.test_b"}, PassRule: c.rule}
 		ev, err := Run(Config{Runner: stubRunner(t, c.exit, c.log)}, task, repo, "", t.TempDir())
@@ -136,5 +143,41 @@ func TestPassRule(t *testing.T) {
 		if ev.Verdict != c.want {
 			t.Errorf("rule=%q exit=%d log=%q: verdict %s, want %s (%v)", c.rule, c.exit, c.log, ev.Verdict, c.want, ev.Reasons)
 		}
+	}
+}
+
+func TestParsePytest(t *testing.T) {
+	log := `tests/test_a.py::test_ok PASSED                               [ 25%]
+=========================== short test summary info ============================
+PASSED tests/test_a.py::test_ok
+PASSED tests/test_a.py::test_param[1-x]
+XFAIL tests/test_a.py::test_known - reason
+SKIPPED [1] tests/test_a.py:9: no db
+FAILED tests/test_a.py::test_bad - AssertionError: 1 != 2
+ERROR tests/test_a.py::test_fixture - RuntimeError
+`
+	passed, failed := parsePytest(log)
+	for _, p := range []string{"tests/test_a.py::test_ok", "tests/test_a.py::test_param[1-x]", "tests/test_a.py::test_known"} {
+		if !passed[p] {
+			t.Errorf("%q not passed: %v", p, sorted(passed))
+		}
+	}
+	if !failed["tests/test_a.py::test_bad"] || !failed["tests/test_a.py::test_fixture"] || len(failed) != 2 {
+		t.Errorf("failed = %v", sorted(failed))
+	}
+}
+
+// Collect-only records statuses and never produces PASS/FAIL, even when no
+// required tests exist.
+func TestCollectOnly(t *testing.T) {
+	repo := t.TempDir()
+	os.WriteFile(filepath.Join(repo, "a.py"), []byte("x\n"), 0o644)
+	task := Task{Name: "t", TestCmd: "x", PassRule: "required_only"}
+	ev, err := Run(Config{Runner: stubRunner(t, 1, "test_a (m.C.test_a) ... ok\n"), CollectOnly: true}, task, repo, "", t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ev.Verdict != Collected || len(ev.Tests.Passed) != 1 {
+		t.Errorf("verdict %s passed %v", ev.Verdict, ev.Tests.Passed)
 	}
 }

@@ -54,5 +54,17 @@ add "qwen3.5-9B h0.3.0 dev" "results/*qwen3.5-9b-32k-reindent-swe-dev-nothink"
     echo
     python3 scripts/report.py "${scols[@]}" --split results/swe/split-sympy.json --difficulty-json results/swe/difficulty.json
   fi
+
+  # pydantic: recent fixes (merged on/after 2026-03-01), evaluation-only.
+  pc=$(join "results/*pydantic-codestral-*")
+  if [[ -n "$pc" ]]; then
+    echo
+    echo "# pydantic (fixes merged on/after 2026-03-01; not in SWE-bench)"
+    echo
+    echo "Tasks built from GitHub by \`scripts/gh/prepare.py\`; required tests derived as SWE-bench does."
+    echo "All tasks held out (\`results/pydantic/plan.json\`)."
+    echo
+    python3 scripts/report.py --col "Codestral h0.7.0=$pc" --difficulty-json results/swe/difficulty.json
+  fi
 } > results/REPORT.md
 echo "wrote results/REPORT.md with ${#cols[@]} args"

@@ -1,0 +1,52 @@
+{
+  "created": "2026-09-27T11:40:53+00:00",
+  "written_before": "any agent run on pydantic tasks",
+  "task_set": "results/pydantic/tasks.json usable_unique, minus any task that fails results/pydantic/validity.jsonl",
+  "design": "evaluation-only: every valid task is held out; no harness change is made because of a pydantic result",
+  "contamination": "every fix was merged on/after 2026-03-01, after Qwen3.5-9B (published 2026-02-27) and codestral-2508",
+  "order": "sha256(instance_id), listed below",
+  "order_list": [
+    "pydantic__pydantic-13692",
+    "pydantic__pydantic-13017",
+    "pydantic__pydantic-12809",
+    "pydantic__pydantic-13272",
+    "pydantic__pydantic-13771",
+    "pydantic__pydantic-13123",
+    "pydantic__pydantic-13215",
+    "pydantic__pydantic-11134",
+    "pydantic__pydantic-13419",
+    "pydantic__pydantic-13051",
+    "pydantic__pydantic-11043",
+    "pydantic__pydantic-13287",
+    "pydantic__pydantic-13453",
+    "pydantic__pydantic-13687",
+    "pydantic__pydantic-13599",
+    "pydantic__pydantic-13713",
+    "pydantic__pydantic-7987",
+    "pydantic__pydantic-13460",
+    "pydantic__pydantic-13675",
+    "pydantic__pydantic-12813",
+    "pydantic__pydantic-13507",
+    "pydantic__pydantic-12704",
+    "pydantic__pydantic-10565",
+    "pydantic__pydantic-13369",
+    "pydantic__pydantic-13520",
+    "pydantic__pydantic-13716"
+  ],
+  "config": {
+    "binary": "brokkr-v0.4 (harness 0.7.0, verifier 0.4.1)",
+    "max_turns": 40,
+    "max_sandbox_runs": 10,
+    "compact_above_tokens": 16000,
+    "runs_per_task": 1
+  },
+  "models": {
+    "codestral-latest": {
+      "via": "Mistral free plan through tools/freetier_proxy.py (threaded, port 11502)",
+      "temperature": 0,
+      "context_tokens": 250000,
+      "shards": 3
+    }
+  },
+  "not_run": "qwen3.5 is paused at Henos's request"
+}

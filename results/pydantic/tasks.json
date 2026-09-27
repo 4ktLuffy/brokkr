@@ -1,0 +1,48 @@
+{
+ "created": "2026-09-27T11:30:37+00:00",
+ "rule": "one task per fixing PR (lowest issue number kept); usable = at least one FAIL_TO_PASS test (scripts/gh/derive_tests.py)",
+ "derived": 37,
+ "usable_unique": [
+  "pydantic__pydantic-10565",
+  "pydantic__pydantic-11043",
+  "pydantic__pydantic-11134",
+  "pydantic__pydantic-12704",
+  "pydantic__pydantic-12809",
+  "pydantic__pydantic-12813",
+  "pydantic__pydantic-13017",
+  "pydantic__pydantic-13051",
+  "pydantic__pydantic-13123",
+  "pydantic__pydantic-13215",
+  "pydantic__pydantic-13272",
+  "pydantic__pydantic-13287",
+  "pydantic__pydantic-13369",
+  "pydantic__pydantic-13419",
+  "pydantic__pydantic-13453",
+  "pydantic__pydantic-13460",
+  "pydantic__pydantic-13507",
+  "pydantic__pydantic-13520",
+  "pydantic__pydantic-13599",
+  "pydantic__pydantic-13675",
+  "pydantic__pydantic-13687",
+  "pydantic__pydantic-13692",
+  "pydantic__pydantic-13713",
+  "pydantic__pydantic-13716",
+  "pydantic__pydantic-13771",
+  "pydantic__pydantic-7987"
+ ],
+ "dropped_duplicates": [
+  "pydantic__pydantic-12771",
+  "pydantic__pydantic-12843",
+  "pydantic__pydantic-13089"
+ ],
+ "unusable": [
+  "pydantic__pydantic-11056",
+  "pydantic__pydantic-11329",
+  "pydantic__pydantic-13161",
+  "pydantic__pydantic-13207",
+  "pydantic__pydantic-13318",
+  "pydantic__pydantic-13356",
+  "pydantic__pydantic-13780",
+  "pydantic__pydantic-8998"
+ ]
+}

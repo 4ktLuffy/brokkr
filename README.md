@@ -118,6 +118,84 @@ Brokkr never pushes, opens or merges anything. For a verified run it prints the
 `git apply` and `gh pr create --draft` commands for a person to run. A run that did
 not verify is marked NOT READY. That is the approval gate.
 
+## Live mode: fixing issues nobody has written tests for
+
+Benchmarks come with hidden tests. Real open issues do not. In live mode the agent
+must also write the proof: a regression test in a new `tests/test_brokkr_*.py`
+file. Brokkr then checks that proof itself, in two fresh microVMs:
+
+| Run | Contents | What must happen |
+|---|---|---|
+| A | original code + the agent's new test file | the new test fails |
+| B | original code + the whole patch | the new test passes, and every existing test that passed in A still passes |
+
+A test that already passes without the fix proves nothing, so it cannot be the
+evidence. Existing tests stay read-only: `create_file` makes new files only,
+and under `tests/` only a new `test_brokkr_*.py`. The self-test rejects any
+other change to a protected path. If no existing test ran in A (a collection
+error, say), the result is ERROR rather than PASS: "no regressions" among zero
+tests means nothing.
+
+```bash
+/usr/bin/python3 scripts/gh/live_task.py issue pydantic/pydantic 13754   # in the VM
+brokkr fix --task ~/.cache/brokkr-gh/live/pydantic__pydantic-13754/task.json ...
+brokkr bundle --run RUN_DIR --out DIR     # pr.md carries the self-test evidence
+brokkr selftest --task T.json --repo DIR --patch P --out DIR   # any patch, no model
+```
+
+Checked in real microVMs on pydantic#13692, with a hand-written test and the
+maintainers' fix:
+
+| Patch | Verdict |
+|---|---|
+| fix and test | PASS: 1 new test fails before and passes after, no regressions |
+| test only | FAIL: the new test does not pass |
+| fix only | FAIL: no regression test |
+
+For a live task at pydantic's HEAD, the regression set is pydantic's own suite
+(`tests/test_*.py`): 4954 test ids in 93 s per run. `live_task.py variant`
+makes a live copy of a historical task that keeps its hidden tests. A run of
+that copy records both verdicts, which measures whether the agent's own test
+agrees with the maintainers' tests.
+
+## Model routing
+
+`brokkr fix --routes dev/routes.json` sends the agent's model calls through a
+router instead of a single model:
+
+- **Per task, pick by evidence.** Backends are ordered by estimated pass rate on
+  the task's repository, from every scored run in `results/`. A backend's record
+  on this repository is shrunk toward its record on all real repositories,
+  weighted as 4 runs, so one lucky run doesn't win. A repository nobody has
+  tried is judged by each backend's general record. Backends that don't answer
+  are skipped. `"objective": "pass_per_hour"` also weighs speed.
+- **Per call, fall back.** A parked free tier, a rate limit, a 5xx or an
+  unreachable server moves the conversation to the next backend. The switch
+  happens mid-run, with no restart.
+- **Escalate.** A conversation that outgrows a backend's window (the local
+  model's 32K) moves up to a larger one (Codestral's 250K) instead of stopping.
+  The router never moves a conversation into a window too small to hold it.
+- **Not routed around:** a malformed reply (the model's failure, scored) and
+  other 4xx errors (a bug in the request).
+- **Tool-call ids** made by one backend are rewritten, only when another
+  backend is sent the conversation, to the 9-character form every provider
+  accepts. Mistral rejects Ollama's.
+
+`brokkr route --for owner/repo` shows the evidence and the order. With
+today's results:
+
+| Repository | Local Qwen 3.5 9B | Codestral | Order |
+|---|---|---|---|
+| django/django | 12/23 (est. 52%) | 38/209 (18%) | Qwen, then Codestral |
+| sympy/sympy | untried (52% from its record) | 9/75 (12%) | Qwen, then Codestral |
+| pydantic/pydantic | untried (52%) | 6/14 (37%) | Qwen, then Codestral |
+
+These estimates are for choosing a backend, not an evaluation: they pool
+harness versions and task sets, which the evaluation never does. Every
+routed run records `served_by` and each switch. A run served by more than one
+backend is a mixed run, and `report.py` and `compare.py` leave it out of model
+comparisons.
+
 ## Free-tier models through freetier
 
 Hosted free tiers run through [freetier](https://github.com/4ktLuffy/freetier), via a
@@ -266,6 +344,13 @@ Stated plainly, so nobody has to find them:
   SWE-bench's parser). pytest, Go and Cargo come later.
 - **One repository so far.** The SWE-bench pipeline covers Django 4.x. Other repos
   need their own environment specs and, for pytest-based ones, a pytest parser.
+- **Live mode trusts the agent's test to be about the issue.** Brokkr proves the
+  test fails without the fix and passes with it; it cannot prove the test checks
+  what the issue asks for. The reviewer reads the test. Live mode has no model
+  results yet.
+- **pytest ids with spaces are cut at the first space** (as in SWE-bench's
+  parser, kept for fidelity), so a few parametrized cases share an id. A
+  regression in one of them can be hidden by another that still passes.
 - **Toy tasks are only a smoke test.** The five fixtures are small Python bugs
   written for this project. Results that mean something come from the SWE-bench
   tasks above.

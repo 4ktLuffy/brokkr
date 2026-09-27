@@ -78,6 +78,11 @@
       "at": "2026-09-27T09:09:48+00:00",
       "written_before": "any further run",
       "text": "Henos: qwen3.5 held-out is paused (not concluded) at 18 scored tasks in split order; no qwen run until he says. Codestral h0.6.1 Django and SymPy held-out runs are finished: the running shards continue under the 30M/day self-cap. Tasks it parks, or that have no scored row, resume automatically after the UTC day resets (03:05 local), same binaries, budgets and order, through the threaded proxy. The cap is not raised."
+    },
+    {
+      "at": "2026-09-27T12:39:37+00:00",
+      "written_before": "any 0.8.0 run on any task",
+      "text": "Harness 0.8.0 (commit nudges when nothing has been edited; turn/sandbox budget footer; prompt: commit early, fixes may span several places) was designed from results/ANALYSIS.md, a failure analysis over all scored runs including the first 14 pydantic runs. So pydantic is no longer untouched by 0.8's design, and a pydantic result for 0.8 would be reported with that caveat. Test: Codestral, 0.8.0, on the 10 Django dev and 10 SymPy dev tasks, same budgets. 0.6.1 solved 4/20 there (Django 2/10, SymPy 2/10). A held-out run with 0.8.0 follows only if it solves strictly more than 4/20, and only with Henos's OK. It runs after the pydantic r2 resume finishes."
     }
   ]
 }

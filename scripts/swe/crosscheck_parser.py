@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Cross-check Brokkr's Go ports of SWE-bench's log parsers against the
 originals. Runs SWE-bench v4.1.0's parse_log_<parser> (fetched at that tag;
-the parser is the one named in the evidence's task, django or sympy) on the
+the parser is the one named in the evidence's task: django, sympy or pytest) on the
 same stdout+stderr Brokkr parsed, and compares the sets of passed and failed
 test names with those in Brokkr's evidence.json.
 
@@ -47,7 +47,8 @@ for run in map(Path, sys.argv[1:]):
     if name not in parsers:
         parsers[name] = original(name)
     ref = parsers[name](log, None)
-    ref_pass = {k for k, v in ref.items() if v == "PASSED"}
+    # SWE-bench's grading counts XFAIL as passing (only pytest logs have it).
+    ref_pass = {k for k, v in ref.items() if v in ("PASSED", "XFAIL")}
     ref_fail = {k for k, v in ref.items() if v in ("FAILED", "ERROR")}
     ours_pass, ours_fail = set(ev["tests"]["passed"]), set(ev["tests"]["failed"])
     same = ref_pass == ours_pass and ref_fail == ours_fail

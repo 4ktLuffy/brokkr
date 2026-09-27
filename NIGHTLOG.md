@@ -608,3 +608,164 @@ needed and was cancelled, which also ended caffeinate. VM and proxy stopped.
   false claims (19 claims, not 40; 10 wrong, not 30). Not proven at the 0.025 level.
 - **qwen3.5 vs Codestral (first 18 tasks, qwen paused):** 9 vs 3, p = 0.031.
   Provisional.
+
+---
+
+# pydantic: a real-world, uncontaminated task set (day, 2026-09-27)
+
+### 13:38 Why pydantic, and how tasks are chosen
+- **Why:** top-tier engineering; the validation layer under FastAPI, the OpenAI and
+  Anthropic SDKs, LangChain and freetier; not in SWE-bench. Live GitHub counts:
+  201 open and 1000+ closed "bug V2" issues.
+- **Uncontaminated by construction.** Only fixes merged **on or after 2026-03-01**:
+  Qwen3.5-9B was published on Hugging Face 2026-02-27, and Codestral is
+  `codestral-2508` (its alias in Mistral's model list).
+- **Candidates:** closed "bug V2" issues fixed by exactly one merged PR into main
+  that changes `pydantic/` and `tests/`. 451 in all, **48 merged since 2026-03-01**
+  (`results/pydantic/candidates.json`).
+- **Task construction** (`scripts/gh/prepare.py`, generic, with a per-repo config):
+  - base = first parent of the PR's merge commit;
+  - test.patch = the PR's `tests/` changes (hidden);
+  - good.patch = the rest (reference fix);
+  - env = the base commit's `uv.lock` (dev group), Python 3.12.
+- **Required tests, derived as SWE-bench does** (`scripts/gh/derive_tests.py`):
+  FAIL_TO_PASS = passing only with the gold fix; PASS_TO_PASS = passing both
+  times. A task with no FAIL_TO_PASS is unusable.
+
+### Problems found and fixed on the way
+- **pydantic-core is in the repo (Rust).** 8 of the 48 fixes change it and are
+  excluded: verifying them would mean compiling Rust on every sandbox run.
+- **Released core wheels do not work.** I first installed the PyPI wheel for each
+  base's core version (5 versions instead of 24 builds). The very first task
+  failed to import: the base's Python code calls `_schema_gather`, which no
+  release has. The core is now **compiled from the base commit's own source**,
+  one env per distinct core tree, with builds sharing one cargo target dir.
+- **I nearly wiped the interpreter I was running on.** `uv run` picked the Python
+  inside `/opt/env`, which env building empties. `prepare.py` now refuses to run
+  from under `/opt/env`, and uses the system Python.
+- **A verifier hole:** under `pass_rule: required_only`, an empty required list
+  gave PASS for anything. Verifier 0.4.1 returns ERROR for a patched run with no
+  required tests (tested).
+- **That guard then blocked derivation**, whose gold run has no required tests yet.
+  A separate `--collect-only` mode records statuses with no verdict (COLLECTED),
+  so the guard stays intact for real verdicts (tested).
+- `pytest-pretty` rewrites pytest's summary. It is disabled with `-p no:pretty`;
+  its entry point is `pretty`, read from its dist-info, not guessed.
+- SWE-bench's grading counts XFAIL as passing; confirmed in v4.1.0 `grading.py`
+  and ported.
+- **First task (13780):** it builds and runs, but all 5 of its tests only run on
+  free-threaded Python, so it is correctly marked unusable.
+
+### 14:56 pydantic task set ready; Codestral running
+- **Derived:** 37 tasks built (the other 3 PRs changed no test_*.py file), 29 with at
+  least one FAIL_TO_PASS test.
+- **Duplicates removed:** 3 PRs each closed several issues (#13672, #13459, #12785),
+  so one task is kept per PR (lowest issue number): **26 unique tasks**
+  (`results/pydantic/tasks.json`).
+- **Validity:** **26/26 valid** (no patch → FAIL, gold → PASS), and SWE-bench's pytest
+  parser agrees with Brokkr's on all 52 logs. The median gold test run is 66 s.
+- **Environments:** 26 distinct pydantic-core trees compiled from source (shared cargo
+  cache).
+- **Plan fixed before any agent run** (`results/pydantic/plan.json`, sha256
+  `0a0a5704…`): evaluation-only, all 26 held out, sha256 order, Codestral with
+  brokkr-v0.4 (harness 0.7.0, verifier 0.4.1), same budgets.
+- **Running:** `scripts/gh/run-codestral.sh pydantic r1` (3 shards). About 2.4M tokens
+  remained today, roughly 10 tasks, so a park is likely. The same script resumes
+  after 03:05 (r2); caffeinate is tied to the whole chain.
+
+### 15:40 Weakness map, and harness 0.8 aimed at the biggest weakness
+- `scripts/analyze_failures.py` classifies every scored real-task run (321: 65 pass,
+  256 fail) from its own patch, the gold patch and the final evidence. Written to
+  `results/ANALYSIS.md`.
+- **Biggest weakness: never editing** (95 runs, 37% of failures, from hand-checked
+  samples):
+  - 48 runs reproduced over and over, then submitted nothing (43% of their calls
+    were run_python);
+  - 47 runs read and searched until the turns ran out (82% of their calls).
+  - The rest: incomplete fix 22%, wrong location 12%, broke existing tests 10%.
+  - Multi-file fixes: 1/39 solved. A reproduction helps: 24% pass with one, 10%
+    without.
+- **Harness 0.8.0:**
+  - a turn and sandbox budget footer on every tool result;
+  - on hidden-test tasks with no edit yet, a commit nudge at a third of the turns,
+    at two thirds, and after 3 run_python attempts (each at most once);
+  - prompt: commit early and refine, and a fix may need the same change in several
+    places.
+  - Tests: 3 reproductions give exactly 1 nudge; an edit first gives none; visible-
+    test tasks get none. The first version of the test failed because the helper
+    allows 1 sandbox run, so the rule now counts attempts.
+- **Pre-registered test:** Codestral 0.8 on the same 20 dev tasks where 0.6.1 got 4/20.
+  A held-out run only if strictly more than 4/20, and only with Henos's OK. Caveat
+  recorded: the analysis included 14 pydantic runs.
+- **Scheduled:** after the pydantic r2 resume (03:05) finishes, 4 workers on the 20
+  dev tasks. caffeinate is tied to both chains.
+
+### 16:18 Live mode (harness 0.9.0): fix an open issue and prove it
+- Henos stopped the chains waiting for the Mistral reset (pydantic r2 and the 0.8
+  dev run). Nothing ran after the r1 pass. The 0.8 pre-registered test has not run.
+- **Live mode:** the agent must write a regression test (new
+  `tests/test_brokkr_*.py`) and fix the code. `verify.SelfTest` checks it with two
+  microVM runs: A (original + new test: must fail), B (whole patch: must pass, and
+  every existing test that passed in A must still pass).
+- **Agent 0.9.0:**
+  - `create_file`, offered only on live tasks: new files only; under a protected
+    path, only a new `test_brokkr_*.py`;
+  - live prompt paragraph; `run_tests` includes the new test files;
+  - non-live tasks get the same tools and prompt as 0.8.0.
+- **Other pieces:** `brokkr selftest`, which judges any patch the same way;
+  `scripts/gh/live_task.py`, which builds a task from an open issue at HEAD, or a
+  live variant of a historical task; the bundle shows the self-test evidence.
+- **Checked in real microVMs** on pydantic 13692 with a hand-written test:
+  - fix + test: PASS;
+  - test only: FAIL;
+  - fix only: FAIL.
+  - Unit tests cover the rest: a test that passes before, a regression, a protected
+    edit (REJECTED), overwriting an existing test, a new test not named
+    `test_brokkr_*`, and conftest.py.
+- **Mistake caught:** the first live baseline (#13754 at HEAD) ran `pytest tests/`.
+  Collecting `tests/pydantic_core` (needs hypothesis) stopped pytest with 0 tests
+  run, so "no regressions" would have been vacuous. Fixed in two ways:
+  - The regression set is now `tests/test_*.py` (4954 ids, 93 s).
+  - A self-test whose run A passed no existing test is an ERROR, and the agent
+    refuses such a baseline before spending any turns.
+- **Found:** SWE-bench's pytest parser cuts ids at the first space. 280 passing
+  lines became 277 ids on test_types.py. Kept for fidelity, and listed in Known
+  limits.
+- **Also:** my first three edit scripts for agent.go never wrote the file (missing
+  write), and the build caught it. Re-applied.
+- **Not run:** live mode with a model (no Codestral until Henos says). Next: the
+  26 pydantic tasks as live variants, to see whether the agent's own test agrees
+  with the hidden tests.
+
+### 18:06 Model router (closes the "vLLM/Bedrock routing" gap with free backends)
+- `internal/route`:
+  - **Per task (Pick):** backends ordered by estimated pass rate on the task's
+    repo, from `results/*/runs.jsonl`. The repo record is shrunk toward the
+    backend's all-real-repo record (weight 4 runs). Unscored and mixed runs are
+    left out. Backends that don't answer are skipped.
+  - **Per call (Router.Chat):** parked, 429, 5xx or unreachable backends fall back
+    to the next one mid-run. A conversation that outgrows a window escalates to
+    a bigger one. Malformed replies and other 4xx are returned, not routed around.
+    If everything is down and something was parked, the error is parked (exit 4).
+  - Foreign tool-call ids are rewritten to 9 alphanumerics (Mistral's rule), and
+    only when another backend is sent the conversation.
+- **Agent:**
+  - talks to a `Chatter` interface;
+  - the overflow check uses the router's largest window, and the near-window
+    truncation rule uses the current backend's;
+  - the prompt-count baseline resets on a switch (different tokenizer, so a
+    smaller count is not truncation);
+  - the summary records `served_by` and `route_switches`.
+- **Reports:** `report.py` and `compare.py` drop mixed-backend runs.
+- **Mistakes caught by looking at real output:**
+  - Codestral showed as "down" because the freetier proxy answers 404 on `/models`.
+    Now only transport errors and 5xx count as down.
+  - A flat Beta(1,1) prior put an untried backend (50%) above Codestral's known
+    12% on sympy for the wrong reason. It is now shrunk toward each backend's own
+    record.
+  - A test fake printed a counter into JSON through `%.0d`, which is not empty for 1.
+- **Real smoke test** (local only, no Codestral tokens): routed `brokkr fix` on the
+  calc fixture. The router picked qwen from the toy record (13/14 vs 13/15), and
+  qwen passed in 5 turns; `served_by` and the sampling were recorded.
+- **Not yet shown for real:** a mid-run fallback or escalation against live
+  servers (fake-server tests only). No routed evaluation has been run.

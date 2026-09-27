@@ -82,6 +82,7 @@ def main() -> None:
     qw, qw_s = score("q", dirs("results/*qwen3.5-9b-32k-reindent-swe-heldout-nothink",
                                "results/*qwen3.5-9b-32k-reindent-swe-heldout-n2-qwen"))
     _, sy_s = score("s", dirs("results/*codestral-latest-reindent-swe-sympy-heldout-n2-h061*"))
+    _, pyd_s = score("p", dirs("results/*pydantic-codestral-*"))
 
     when = datetime.datetime.now().strftime("%Y-%m-%d %H:%M local")
     for k, v in {
@@ -89,6 +90,7 @@ def main() -> None:
         "CODESTRAL_061": new_s,
         "QWEN_031": qw_s,
         "SYMPY_061": sy_s,
+        "PYD_CODESTRAL": pyd_s + ("" if "/ 26 " in pyd_s else ", in progress"),
         "PAIR_061": paired(base, new, "0.3.1", "0.6.1"),
         "PAIR_QWEN": paired(base, qw, "Codestral", "qwen3.5-9B"),
     }.items():
