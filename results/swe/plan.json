@@ -68,6 +68,16 @@
       "at": "2026-09-27T03:17:19+00:00",
       "written_before": "resuming the parked h0.6.1 Django held-out and SymPy held-out runs",
       "text": "At 06:16 local the self-imposed 15M/day freetier cap parked all Codestral runs (Mistral never rate-limited). The cap is raised to 30M/day (dev/freetier/providers.yaml, with the measured reason). The h0.6.1 Django held-out and SymPy held-out runs resume on every valid held-out task that has no scored row (never run, parked, or infra), in split order, same binaries and budgets, through the threaded proxy on 11502: 3 shards for Django, 2 for SymPy. Infra and parked rows are replaced by the rerun's row (report.py)."
+    },
+    {
+      "at": "2026-09-27T08:43:06+00:00",
+      "written_before": "the third resume of the h0.6.1 Django and SymPy held-out runs",
+      "text": "Resumed at Henos's request after the 07:26 stop, same binaries, budgets and proxy (11502, 30M/day), on every valid held-out task with no scored row, in split order. Django in 3 shards; SymPy in 4 shards instead of 2, for speed only (every task is still run once, and the order within each shard is the split order)."
+    },
+    {
+      "at": "2026-09-27T09:09:48+00:00",
+      "written_before": "any further run",
+      "text": "Henos: qwen3.5 held-out is paused (not concluded) at 18 scored tasks in split order; no qwen run until he says. Codestral h0.6.1 Django and SymPy held-out runs are finished: the running shards continue under the 30M/day self-cap. Tasks it parks, or that have no scored row, resume automatically after the UTC day resets (03:05 local), same binaries, budgets and order, through the threaded proxy. The cap is not raised."
     }
   ]
 }

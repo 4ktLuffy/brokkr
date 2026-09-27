@@ -35,7 +35,7 @@ def score(label: str, spec: str) -> tuple[dict[str, bool], str]:
         return {}, "not run"
     _, r = rows(f"{label}={spec}")
     p, n = sum(r.values()), len(r)
-    return r, f"**{p} / {n} ({100 * p / n:.0f}%)** scored so far" if n else "no scored task yet"
+    return r, f"**{p} / {n} ({100 * p / n:.0f}%)**" if n else "no scored task yet"
 
 
 PVALUES: list[float] = []
@@ -59,7 +59,8 @@ def stat_note(final: bool) -> str:
     an interim look, and repeated looks inflate false positives."""
     alpha = 0.05 / max(1, len(PVALUES))
     passing = [p for p in PVALUES if p < alpha]
-    looks = "" if final else " These are interim looks at unfinished runs; repeated looks inflate false positives, so treat them as provisional until the runs finish."
+    looks = (" The qwen3.5 comparison covers only its first 18 tasks (paused) and was looked at repeatedly, so treat it as provisional."
+             if final else " These are interim looks at unfinished runs; repeated looks inflate false positives, so treat them as provisional until the runs finish.")
     if not PVALUES:
         return "No paired comparison yet."
     if passing:

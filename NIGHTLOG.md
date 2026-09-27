@@ -578,3 +578,33 @@ plan.json's resume rule they are rerun, not counted.
 
 **Awaiting Henos:** commit 1 (LICENSE, staged); commit 2 (night-2 work, diff to show).
 Nothing was committed or pushed tonight.
+
+### 11:43 (day) Codestral resumed at Henos's request
+- Remaining: 18 Django (0.6.1, 3 shards) and 24 SymPy (4 shards instead of 2, for speed), in split order, through the threaded proxy on 11502. plan.json was amended first.
+- Budget: UTC 09-27 had used 20.96M of the 30M cap, so about 9M is left until 03:00; the remaining tasks need about 7M at the measured median of about 146K tokens per task. A park would stop them cleanly, and the cap is not raised without asking.
+
+### 12:10 (day) Henos: pause qwen, finish Codestral
+- qwen3.5 held-out is paused (not concluded) at 18 scored tasks; recorded in plan.json.
+- Codestral: the current shards run until the 30M cap parks them. `scripts/resume-codestral.sh` reruns every valid task without a scored row, in split order with the same binaries. A background job starts it at 03:05 local, after the UTC reset, once the running shards have ended.
+- The Mac is kept from idle sleep by `caffeinate -i -w <pid>`, tied to that job, which ends with it (no setting changed). A closed lid still sleeps.
+
+### 12:52 (day) Codestral complete on both repositories
+All valid held-out tasks now have a scored row: Django 82/82 and SymPy 65/65. That
+used 27.6M tokens on UTC 09-27, under the 30M cap. The 03:05 resume job was not
+needed and was cancelled, which also ended caffeinate. VM and proxy stopped.
+
+| Run (held-out) | Verified | "<15 min" | "15 min–1 h" | harder | Fix claims | wrong |
+|---|---|---|---|---|---|---|
+| Django, Codestral h0.3.1 | 11/79 (14%) | 10/35 | 1/36 | 0/8 | 40 | 30 |
+| Django, Codestral h0.6.1 | 18/82 (22%) | 16/36 | 2/38 | 0/8 | 19 | 10 |
+| SymPy, Codestral h0.6.1 | 7/65 (11%) | 6/23 | 1/35 | 0/7 | 18 | 13 |
+| Django, qwen3.5-9B h0.3.1 (paused) | 9/18 (50%) | | | | | |
+
+- **Paired, Django, 0.6.1 vs 0.3.1 on the 79 shared tasks:** 18 vs 11. The 8–1
+  discordant split gives exact McNemar p = 0.039: below 0.05 on its own, but not
+  below the Bonferroni 0.025 for the two comparisons made.
+- **Reading:** the harness changes (reproduce-first prompt, loop detection, a
+  truncation check that no longer fires falsely) point to more fixes **and** fewer
+  false claims (19 claims, not 40; 10 wrong, not 30). Not proven at the 0.025 level.
+- **qwen3.5 vs Codestral (first 18 tasks, qwen paused):** 9 vs 3, p = 0.031.
+  Provisional.

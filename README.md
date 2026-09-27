@@ -156,12 +156,12 @@ freetier's limits table:
 Tests: `tools/.venv/bin/python -m unittest tools/test_freetier_proxy.py` runs with no key
 and all outbound traffic routed to a dead address, using a throwaway ledger.
 
-## Results on SWE-bench Verified (in progress)
+## Results on SWE-bench Verified
 
 <!-- RESULTS:START -->
-Snapshot taken 2026-09-27 07:26 local from `results/REPORT.md` (regenerate with
-`scripts/make-report.sh`). Runs are still in progress, so the counts below are
-partial where noted. Every verdict is Brokkr's own check against SWE-bench's hidden
+Snapshot taken 2026-09-27 12:52 local from `results/REPORT.md` (regenerate with
+`scripts/make-report.sh`). The counts below are
+final for Codestral; qwen3.5 is paused. Every verdict is Brokkr's own check against SWE-bench's hidden
 tests. Held-out tasks were never used to shape the harness (`results/swe/plan.json`).
 
 **Django 4.x, held-out (82 valid tasks):**
@@ -169,17 +169,16 @@ tests. Held-out tasks were never used to shape the harness (`results/swe/plan.js
 | Run | Verified | Notes |
 |---|---|---|
 | Codestral, harness 0.3.1 (pre-registered baseline) | **11 / 79 (14%)** | complete. 29% of "<15 min" tasks, 1 of 36 "15 min–1 h", 0 of 8 harder. **Claimed a fix 40 times; 30 were wrong** |
-| Codestral, harness 0.6.1 | **13 / 64 (20%)** scored so far | in progress |
-| qwen3.5-9B, local on the Mac, harness 0.3.1 | **9 / 18 (50%)** scored so far | in progress, in pre-registered order |
+| Codestral, harness 0.6.1 | **18 / 82 (22%)** | complete |
+| qwen3.5-9B, local on the Mac, harness 0.3.1 | **9 / 18 (50%)** | paused after the first 18 tasks in pre-registered order |
 
 **Paired, on the same tasks (exact McNemar test):**
-- Codestral 0.6.1 vs 0.3.1: 0.6.1 13/62 vs 0.3.1 8/62 on 62 shared tasks (6–1 discordant, p = 0.125)
+- Codestral 0.6.1 vs 0.3.1: 0.6.1 18/79 vs 0.3.1 11/79 on 79 shared tasks (8–1 discordant, p = 0.039)
 - qwen3.5-9B vs Codestral: qwen3.5-9B 9/18 vs Codestral 3/18 on 18 shared tasks (6–0 discordant, p = 0.031)
 
-Neither comparison is below the Bonferroni threshold (α = 0.025 for 2 comparisons), though the direction is consistent. These are interim looks at unfinished runs; repeated looks inflate false positives, so treat them as provisional until the runs finish.
+Neither comparison is below the Bonferroni threshold (α = 0.025 for 2 comparisons), though the direction is consistent. The qwen3.5 comparison covers only its first 18 tasks (paused) and was looked at repeatedly, so treat it as provisional.
 
-**SymPy, held-out (65 valid tasks):** Codestral, harness 0.6.1: **5 / 41 (12%)** scored so far, in
-progress.
+**SymPy, held-out (65 valid tasks):** Codestral, harness 0.6.1: **7 / 65 (11%)**, complete.
 
 Across both repositories, 167 of the 169 prepared tasks passed the validity check:
 Django 92/94 and SymPy 75/75. The Brokkr ports of SWE-bench's log parsers agree with
