@@ -17,18 +17,24 @@ import (
 	"strings"
 
 	"github.com/4ktLuffy/brokkr/internal/agent"
+	"github.com/4ktLuffy/brokkr/internal/bundle"
 	"github.com/4ktLuffy/brokkr/internal/model"
 	"github.com/4ktLuffy/brokkr/internal/verify"
 )
 
 const usage = `usage:
   brokkr verify --task T.json --repo DIR [--patch P] --out DIR
-  brokkr fix    --task T.json --repo DIR --out DIR [--model NAME] [--model-url URL]`
+  brokkr fix    --task T.json --repo DIR --out DIR [--model NAME] [--model-url URL]
+  brokkr bundle --run RUN_DIR --out DIR`
 
 func main() {
 	if len(os.Args) < 2 {
 		fmt.Fprintln(os.Stderr, usage)
 		os.Exit(2)
+	}
+	if os.Args[1] == "bundle" {
+		bundleCmd(os.Args[2:])
+		return
 	}
 	fs := flag.NewFlagSet(os.Args[1], flag.ExitOnError)
 	taskPath := fs.String("task", "", "task spec (JSON)")
@@ -123,6 +129,35 @@ func main() {
 		os.Exit(3)
 	default:
 		os.Exit(2)
+	}
+}
+
+// bundleCmd writes a review bundle for a finished run. It never pushes: it
+// prints the command a human would run to open the pull request.
+func bundleCmd(argv []string) {
+	fs := flag.NewFlagSet("bundle", flag.ExitOnError)
+	run := fs.String("run", "", "a `brokkr fix` output directory")
+	out := fs.String("out", "", "where to write patch.diff and pr.md")
+	_ = fs.Parse(argv)
+	if *run == "" || *out == "" {
+		fmt.Fprintln(os.Stderr, usage)
+		os.Exit(2)
+	}
+	res, err := bundle.Write(*run, *out)
+	if err != nil {
+		die(err)
+	}
+	state := "READY"
+	if !res.Ready {
+		state = "NOT READY"
+	}
+	fmt.Printf("%s  %s\n  %s\n  %s\n", state, res.Title, res.PatchPath, res.BodyPath)
+	if res.Ready {
+		fmt.Printf("to propose it (a human decision): git apply %s && gh pr create --draft --title %q --body-file %s\n",
+			res.PatchPath, res.Title, res.BodyPath)
+	}
+	if !res.Ready {
+		os.Exit(1)
 	}
 }
 

@@ -38,6 +38,36 @@
       "at": "2026-09-24T23:06:53+00:00",
       "written_before": "any held-out run with harness 0.4 or later",
       "text": "Supersedes the 0.4-only rule. Harness versions 0.4.0, 0.5.0 and 0.6.0 are each run once on the 10 dev tasks with Codestral. The one that verifies the most dev tasks (ties: fewer total tokens) gets a single held-out run with Codestral, and only if it verifies more dev tasks than 0.3.0 did. That run is reported as its own column beside the 0.3.1 held-out run. No harness change after this amendment is run on held-out tasks tonight."
+    },
+    {
+      "at": "2026-09-26T21:40:06+00:00",
+      "written_before": "resuming any held-out run on night 2",
+      "text": "Night 2 resume. The 0.3.1 held-out baselines were stopped by request at 2026-09-25 03:18 local. They resume with the same binary (brokkr-0.3.1) and config on the valid held-out tasks that have no scored row yet, in split.json order: Codestral 55 tasks in 3 shards, qwen3.5 from the first task. Runs cut off by the stop left no scored row and are rerun, not counted. Results are reported as one column per model, merging the night-1 and night-2 directories."
+    },
+    {
+      "at": "2026-09-26T21:40:43+00:00",
+      "written_before": "any 0.6.1 run on any task",
+      "text": "Night 2 dev comparison: 0.3.0 completes its 2 missing dev tasks (django__django-15957, django__django-16100). 0.6.1 (= 0.6.0 plus the near-window-only truncation rule) runs all 10 dev tasks, Codestral, same budgets. 0.6.1 gets one Codestral held-out run on all 82 valid held-out tasks only if its dev verified count is strictly greater than 0.3.0's over the same 10 tasks. Runs parked or truncated are rerun before comparing. Reported as its own column."
+    },
+    {
+      "at": "2026-09-26T22:03:50+00:00",
+      "written_before": "any agent run on SymPy tasks",
+      "text": "SymPy (results/swe/split-sympy.json): Codestral with the binary built from harness 0.6.1 + verifier 0.3 (brokkr-v0.3; SymPy needs the sympy parser and pass_rule required_only). Same budgets as Django (40 turns, 10 sandbox runs, compaction at 16K). First the 10 SymPy dev tasks, then every valid SymPy held-out task in split order, one run each, 2 shards. The harness is not changed between the SymPy dev and held-out runs. SymPy results are reported in their own table, never pooled with Django."
+    },
+    {
+      "at": "2026-09-27T00:34:36+00:00",
+      "written_before": "any 0.7.0 run on any task",
+      "text": "Harness 0.7.0 (= 0.6.1 plus: after an edit to a .py file the file is parsed with ast.parse, never executed, and a SyntaxError is reported in the tool result) runs on the 10 Django dev tasks with Codestral, same budgets. A held-out run with 0.7.0 follows only if its dev verified count is strictly greater than 0.6.1's (2/10), and only if there is time for all 82 tasks; otherwise it is not run, and the dev result is reported as dev only."
+    },
+    {
+      "at": "2026-09-27T02:36:15+00:00",
+      "written_before": "any rerun of an infra-lost task",
+      "text": "Tasks whose run in the h0.6.1 Django held-out, SymPy dev or SymPy held-out runs ended as infra (proxy connection timeouts, parks) are rerun once after that run finishes, with the same binary and budgets, through the threaded proxy on port 11502. The rerun replaces the infra row (report.py drops infra rows for tasks later scored). The pre-registered 0.3.1 baseline is not rerun: its infra rows stay as they are."
+    },
+    {
+      "at": "2026-09-27T03:17:19+00:00",
+      "written_before": "resuming the parked h0.6.1 Django held-out and SymPy held-out runs",
+      "text": "At 06:16 local the self-imposed 15M/day freetier cap parked all Codestral runs (Mistral never rate-limited). The cap is raised to 30M/day (dev/freetier/providers.yaml, with the measured reason). The h0.6.1 Django held-out and SymPy held-out runs resume on every valid held-out task that has no scored row (never run, parked, or infra), in split order, same binaries and budgets, through the threaded proxy on 11502: 3 shards for Django, 2 for SymPy. Infra and parked rows are replaced by the rerun's row (report.py)."
     }
   ]
 }

@@ -104,6 +104,20 @@ a hosted provider (`--model-url`, `BROKKR_API_KEY`).
 checks that the unpatched repo FAILS and the reference patch PASSES; a task that
 fails either check is reported invalid and excluded.
 
+## From a verified run to a pull request
+
+`brokkr bundle --run RUN_DIR --out DIR` turns a finished `brokkr fix` run into what
+a reviewer needs:
+
+- `patch.diff`;
+- `pr.md`: the issue title, the agent's own summary, whether its claim matches the
+  verdict, the required tests passing, and hashes of every input (repo, patch,
+  patched tree, hidden test patch, kernel, rootfs, env).
+
+Brokkr never pushes, opens or merges anything. For a verified run it prints the
+`git apply` and `gh pr create --draft` commands for a person to run. A run that did
+not verify is marked NOT READY. That is the approval gate.
+
 ## Free-tier models through freetier
 
 Hosted free tiers run through [freetier](https://github.com/4ktLuffy/freetier), via a
@@ -141,6 +155,36 @@ freetier's limits table:
 
 Tests: `tools/.venv/bin/python -m unittest tools/test_freetier_proxy.py` runs with no key
 and all outbound traffic routed to a dead address, using a throwaway ledger.
+
+## Results on SWE-bench Verified (in progress)
+
+<!-- RESULTS:START -->
+Snapshot taken 2026-09-27 07:26 local from `results/REPORT.md` (regenerate with
+`scripts/make-report.sh`). Runs are still in progress, so the counts below are
+partial where noted. Every verdict is Brokkr's own check against SWE-bench's hidden
+tests. Held-out tasks were never used to shape the harness (`results/swe/plan.json`).
+
+**Django 4.x, held-out (82 valid tasks):**
+
+| Run | Verified | Notes |
+|---|---|---|
+| Codestral, harness 0.3.1 (pre-registered baseline) | **11 / 79 (14%)** | complete. 29% of "<15 min" tasks, 1 of 36 "15 min–1 h", 0 of 8 harder. **Claimed a fix 40 times; 30 were wrong** |
+| Codestral, harness 0.6.1 | **13 / 64 (20%)** scored so far | in progress |
+| qwen3.5-9B, local on the Mac, harness 0.3.1 | **9 / 18 (50%)** scored so far | in progress, in pre-registered order |
+
+**Paired, on the same tasks (exact McNemar test):**
+- Codestral 0.6.1 vs 0.3.1: 0.6.1 13/62 vs 0.3.1 8/62 on 62 shared tasks (6–1 discordant, p = 0.125)
+- qwen3.5-9B vs Codestral: qwen3.5-9B 9/18 vs Codestral 3/18 on 18 shared tasks (6–0 discordant, p = 0.031)
+
+Neither comparison is below the Bonferroni threshold (α = 0.025 for 2 comparisons), though the direction is consistent. These are interim looks at unfinished runs; repeated looks inflate false positives, so treat them as provisional until the runs finish.
+
+**SymPy, held-out (65 valid tasks):** Codestral, harness 0.6.1: **5 / 41 (12%)** scored so far, in
+progress.
+
+Across both repositories, 167 of the 169 prepared tasks passed the validity check:
+Django 92/94 and SymPy 75/75. The Brokkr ports of SWE-bench's log parsers agree with
+the originals on every validation log (338 logs).
+<!-- RESULTS:END -->
 
 ## First results (toy tasks, local 7B model)
 
@@ -230,17 +274,19 @@ Stated plainly, so nobody has to find them:
 ## Layout
 
 ```
-cmd/brokkr/          Go control plane (CLI): brokkr verify, brokkr fix
+cmd/brokkr/          Go control plane (CLI): brokkr verify, brokkr fix, brokkr bundle
 internal/verify/     patch staging, protected-path check, verdict, evidence
 internal/agent/      the tool-calling loop and the model's workspace
 internal/model/      OpenAI-compatible chat client
+internal/bundle/     review bundle (patch + PR description with evidence)
 tools/               freetier proxy (Python) and its tests
 runner/              Rust sandbox runner: one command, one fresh microVM
 guest/brokkr-init    PID 1 inside the guest
 scripts/             gates and image build
 fixtures/            five small buggy repos with task specs and reference patches
                      (calc also has the adversarial patches used by gate 1)
-results/             eval outputs, one directory per run
+results/             eval outputs, one directory per run; REPORT.md is generated
+                     from them by scripts/make-report.sh
 dev/lima.yaml        the reference dev VM
 ```
 

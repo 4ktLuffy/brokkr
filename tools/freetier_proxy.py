@@ -32,7 +32,7 @@ import json
 import os
 import subprocess
 import sys
-from http.server import BaseHTTPRequestHandler, HTTPServer
+from http.server import BaseHTTPRequestHandler, HTTPServer, ThreadingHTTPServer
 from typing import Any
 
 from freetier.ledger import BudgetParked, ProviderNotConfigured
@@ -112,13 +112,28 @@ def make_handler(client: Any) -> type[BaseHTTPRequestHandler]:
     return Handler
 
 
+class Server(ThreadingHTTPServer):
+    """One thread per request. A single-threaded server serialises every agent
+    behind whichever request is in flight, and its default listen backlog (5)
+    drops connections once more agents than that are waiting (seen: "dial tcp
+    ... i/o timeout" with 7 concurrent agents). freetier's Ledger and Pacer
+    share one threading.Lock and are safe across threads."""
+
+    daemon_threads = True
+    request_queue_size = 128
+
+
+def make_server(port: int, client: Any) -> HTTPServer:
+    return Server(("127.0.0.1", port), make_handler(client))
+
+
 def main() -> None:
     upstream = os.environ.get("BROKKR_UPSTREAM_URL", "")
     if not upstream:
         sys.exit("set BROKKR_UPSTREAM_URL, e.g. https://openrouter.ai/api/v1")
     port = int(os.environ.get("BROKKR_PROXY_PORT", "11500"))
     client = paced_openai_client(upstream, load_key())
-    server = HTTPServer(("127.0.0.1", port), make_handler(client))
+    server = make_server(port, client)
     print(f"brokkr freetier proxy: 127.0.0.1:{port} -> {upstream}", file=sys.stderr)
     server.serve_forever()
 

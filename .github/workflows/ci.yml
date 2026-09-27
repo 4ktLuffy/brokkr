@@ -1,0 +1,45 @@
+# Checks that need no KVM: Go formatting, vet and unit tests (with stub runners
+# and fake model servers), the Rust runner build, and shell script syntax.
+# Firecracker gates (scripts/kvm-smoke.sh, scripts/gate1.sh) need /dev/kvm and
+# are run on the reference machine, not here.
+#
+# Not run here yet: tools/test_freetier_proxy.py, which needs the freetier
+# package (github.com/4ktLuffy/freetier) to be published first.
+name: ci
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  go:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: gofmt
+        run: test -z "$(gofmt -l .)" || { gofmt -l .; exit 1; }
+      - run: go vet ./...
+      - run: go test ./...
+      - run: go build ./cmd/brokkr
+
+  rust:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo build --release --locked
+        working-directory: runner
+
+  scripts:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: bash syntax
+        run: for f in scripts/*.sh scripts/swe/*.sh; do bash -n "$f" || exit 1; done
+      - name: python syntax
+        run: python3 -m py_compile scripts/*.py scripts/swe/*.py tools/*.py

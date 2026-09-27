@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -369,5 +370,41 @@ func TestSmallDropFarFromWindowIsNotTruncation(t *testing.T) {
 	sum := runWithFakeModel(t, srv.URL, 250000)
 	if sum.StopReason != "agent submitted" || sum.Infra != "" {
 		t.Fatalf("stop=%q infra=%q; a 4%% drop at 13K of 250K is not truncation", sum.StopReason, sum.Infra)
+	}
+}
+
+func TestSyntaxCheckAfterEdit(t *testing.T) {
+	if _, err := exec.LookPath("python3"); err != nil {
+		t.Skip("no python3")
+	}
+	root := t.TempDir()
+	os.WriteFile(filepath.Join(root, "m.py"), []byte("x = {\n    'a': 1,\n}\n"), 0o644)
+	os.WriteFile(filepath.Join(root, "notes.txt"), []byte("}\n"), 0o644)
+	ws := &workspace{root: root}
+	if msg := ws.syntaxError("m.py"); msg != "" {
+		t.Fatalf("valid file reported: %q", msg)
+	}
+	ws.replaceLines("m.py", 2, 2, "    'a': 1,\n}")
+	if msg := ws.syntaxError("m.py"); !strings.Contains(msg, "line") {
+		t.Errorf("broken file not reported: %q", msg)
+	}
+	if msg := ws.syntaxError("notes.txt"); msg != "" {
+		t.Errorf("non-Python file checked: %q", msg)
+	}
+}
+
+// Wired into the loop: an edit that breaks a .py file is flagged to the model.
+func TestSyntaxWarningReachesModel(t *testing.T) {
+	if _, err := exec.LookPath("python3"); err != nil {
+		t.Skip("no python3")
+	}
+	srv := scriptedServer(t,
+		`{"name":"replace_in_file","arguments":"{\"path\":\"a.py\",\"old_text\":\"x = 1\",\"new_text\":\"x = (\"}"}`,
+		`{"name":"submit","arguments":"{\"fixed\":false}"}`,
+	)
+	defer srv.Close()
+	sum := runWithFakeModelTask(t, srv.URL, func(*verify.Task) {})
+	if sum.SyntaxErrorsIntroduced != 1 {
+		t.Fatalf("syntax_errors_introduced = %d, want 1", sum.SyntaxErrorsIntroduced)
 	}
 }

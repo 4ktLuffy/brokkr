@@ -28,9 +28,12 @@ providers:
         # runs (~25K tokens each); real SWE-bench runs measured 11K-359K tokens
         # (1.0M for 6 dev runs), so it is now 15M. If the real cap is lower,
         # Mistral's own 429 parks the run through freetier; it is never retried into.
-        limits: {rpm: 125, rpd: null, tpm: 625000, tpd: 15000000}
+        limits: {rpm: 125, rpd: null, tpm: 625000, tpd: 30000000}
         evidence: >-
           rpm/tpm from live headers 2026-09-24 (see provider evidence). tpd
           (assumed; self-imposed): no daily or monthly figure is published.
           Raised 3M -> 15M on 2026-09-25 01:25 local after measuring real-task
-          token use.
+          token use. Raised 15M -> 30M on 2026-09-27 06:16 local: seven agents used
+          14.96M in 3h16m (2096 requests) with 0 rate-limit responses from Mistral
+          over four days; 30M/day stays under the reported ~1B/month. Still
+          self-imposed; a real Mistral 429 parks cleanly.

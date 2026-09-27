@@ -26,6 +26,11 @@ import (
 	"time"
 )
 
+// VerifierVersion identifies the verification rules and parsers; it is recorded
+// in every evidence file. 0.1 had unittest and django parsers; 0.2 adds sympy;
+// 0.3 adds pass_rule (default unchanged).
+const VerifierVersion = "0.3.0"
+
 type Verdict string
 
 const (
@@ -46,18 +51,25 @@ type Task struct {
 	// patch: the hidden tests of SWE-bench-style tasks, which the agent never
 	// sees. Relative paths are resolved against the task file's directory.
 	TestPatch string `json:"test_patch,omitempty"`
-	// Parser reads the test log: "unittest" (default) or "django", a port of
-	// SWE-bench v4.1.0's parse_log_django, whose test names SWE-bench's
-	// FAIL_TO_PASS and PASS_TO_PASS lists use verbatim.
+	// Parser reads the test log: "unittest" (default), or "django" / "sympy",
+	// ports of SWE-bench v4.1.0's parse_log_django / parse_log_sympy, whose
+	// test names SWE-bench's FAIL_TO_PASS and PASS_TO_PASS lists use verbatim.
 	Parser string `json:"parser,omitempty"`
 	// EnvImage is a read-only ext4 image mounted at /opt/env in the guest,
 	// holding the interpreter and dependencies. Relative to the task file.
 	EnvImage string `json:"env_image,omitempty"`
+	// PassRule is "exit_and_required" (default: exit 0 and every required test
+	// passes) or "required_only", SWE-bench's own resolution criterion: every
+	// required test passes and the exit code is ignored. SymPy needs it: old
+	// releases have tests that error on Python 3.9 even with the gold patch,
+	// and SWE-bench leaves them out of the required lists.
+	PassRule string `json:"pass_rule,omitempty"`
 	MemMiB   int    `json:"mem_mib,omitempty"`
 }
 
 type Evidence struct {
 	Schema    string          `json:"schema"`
+	Verifier  string          `json:"verifier"`
 	RunID     string          `json:"run_id"`
 	StartedAt time.Time       `json:"started_at"`
 	Host      string          `json:"host"`
@@ -92,6 +104,7 @@ type Config struct {
 func Run(cfg Config, task Task, repoDir, patchPath, outDir string) (*Evidence, error) {
 	ev := &Evidence{
 		Schema:    "brokkr.evidence/v0",
+		Verifier:  VerifierVersion,
 		RunID:     fmt.Sprintf("%s-%d", time.Now().UTC().Format("20060102T150405Z"), os.Getpid()),
 		StartedAt: time.Now().UTC(),
 		Host:      cfg.Host,
@@ -210,6 +223,8 @@ func Run(cfg Config, task Task, repoDir, patchPath, outDir string) (*Evidence, e
 		passed, failed = parseUnittest(append(stdout, stderr...))
 	case "django":
 		passed, failed = parseDjango(string(append(stdout, stderr...)))
+	case "sympy":
+		passed, failed = parseSympy(string(append(stdout, stderr...)))
 	default:
 		return finish(Error, "unknown parser "+task.Parser)
 	}
@@ -221,9 +236,14 @@ func Run(cfg Config, task Task, repoDir, patchPath, outDir string) (*Evidence, e
 	}
 
 	var reasons []string
+	switch task.PassRule {
+	case "", "exit_and_required", "required_only":
+	default:
+		return finish(Error, "unknown pass_rule "+task.PassRule)
+	}
 	if rep.Guest.TimedOut {
 		reasons = append(reasons, fmt.Sprintf("test command timed out after %ds", timeout))
-	} else if rep.Guest.ExitCode != 0 {
+	} else if rep.Guest.ExitCode != 0 && task.PassRule != "required_only" {
 		reasons = append(reasons, fmt.Sprintf("test command exited %d", rep.Guest.ExitCode))
 	}
 	if n := len(ev.Tests.MissingRequired); n > 0 {
@@ -231,6 +251,9 @@ func Run(cfg Config, task Task, repoDir, patchPath, outDir string) (*Evidence, e
 	}
 	if len(reasons) > 0 {
 		return finish(Fail, reasons...)
+	}
+	if task.PassRule == "required_only" {
+		return finish(Pass, fmt.Sprintf("all %d required tests passed (exit %d; pass_rule required_only)", len(task.RequiredTests), rep.Guest.ExitCode))
 	}
 	return finish(Pass, fmt.Sprintf("exit 0 and all %d required tests passed", len(task.RequiredTests)))
 }

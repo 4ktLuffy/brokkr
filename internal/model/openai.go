@@ -21,6 +21,46 @@ type Message struct {
 	Name       string     `json:"name,omitempty"`
 }
 
+// UnmarshalJSON accepts content as a string or as a list of parts. Mistral
+// sometimes replies with [{"type":"text","text":...}, ...]; only text parts
+// are kept (a "thinking" part is not the answer). null is "".
+func (m *Message) UnmarshalJSON(b []byte) error {
+	type plain Message
+	var raw struct {
+		plain
+		Content json.RawMessage `json:"content"`
+	}
+	if err := json.Unmarshal(b, &raw); err != nil {
+		return err
+	}
+	*m = Message(raw.plain)
+	c := bytes.TrimSpace(raw.Content)
+	switch {
+	case len(c) == 0 || string(c) == "null":
+		m.Content = ""
+	case c[0] == '"':
+		return json.Unmarshal(c, &m.Content)
+	case c[0] == '[':
+		var parts []struct {
+			Type string `json:"type"`
+			Text string `json:"text"`
+		}
+		if err := json.Unmarshal(c, &parts); err != nil {
+			return fmt.Errorf("content parts: %w", err)
+		}
+		var sb strings.Builder
+		for _, p := range parts {
+			if p.Type == "text" || p.Type == "" {
+				sb.WriteString(p.Text)
+			}
+		}
+		m.Content = sb.String()
+	default:
+		return fmt.Errorf("content is neither a string nor a list: %.60s", c)
+	}
+	return nil
+}
+
 type ToolCall struct {
 	ID       string `json:"id"`
 	Type     string `json:"type"`

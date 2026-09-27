@@ -49,7 +49,9 @@ import (
 //	0.6.1  the shrinking-prompt truncation rule applies only when the estimate is
 //	       within 80% of the window (0.6.0 stopped a Codestral run at 13K of
 //	       256K on a 4% drop in Mistral's count). Not run on held-out tonight.
-const HarnessVersion = "0.6.1"
+//	0.7.0  after an edit to a .py file, the file is parsed (ast.parse, never
+//	       executed) and a SyntaxError is reported in the tool result
+const HarnessVersion = "0.7.0"
 
 type Config struct {
 	Model       *model.Client
@@ -102,15 +104,16 @@ type Summary struct {
 	Refusals             int            `json:"refusals"`
 	// MalformedReplies counts replies the server could not parse (for example
 	// a broken tool call). Retried; a run that ends on one is scored.
-	MalformedReplies int            `json:"malformed_replies"`
-	CompactBatches   int            `json:"compact_batches"`
-	SubmitReminders  int            `json:"submit_reminders"`
-	LoopWarnings     int            `json:"loop_warnings"`
-	Budget           map[string]int `json:"budget"`
-	PromptTok        int            `json:"prompt_tokens"`
-	OutputTok        int            `json:"completion_tokens"`
-	WallMS           int64          `json:"wall_ms"`
-	PatchLines       int            `json:"patch_changed_lines"`
+	MalformedReplies       int            `json:"malformed_replies"`
+	CompactBatches         int            `json:"compact_batches"`
+	SubmitReminders        int            `json:"submit_reminders"`
+	LoopWarnings           int            `json:"loop_warnings"`
+	SyntaxErrorsIntroduced int            `json:"syntax_errors_introduced"`
+	Budget                 map[string]int `json:"budget"`
+	PromptTok              int            `json:"prompt_tokens"`
+	OutputTok              int            `json:"completion_tokens"`
+	WallMS                 int64          `json:"wall_ms"`
+	PatchLines             int            `json:"patch_changed_lines"`
 }
 
 const systemPrompt = `You are fixing an issue in a code repository. You change source files; you cannot change tests.
@@ -345,6 +348,11 @@ loop:
 				result, refused = ws.call(name, args)
 				if (name == "replace_in_file" || name == "replace_lines") && strings.HasPrefix(result, "ok:") {
 					checkedSinceEdit = false
+					path, _ := args["path"].(string)
+					if msg := ws.syntaxError(path); msg != "" {
+						result += "\n\nWARNING: after this edit the file no longer parses: " + msg + "\nFix this before anything else."
+						sum.SyntaxErrorsIntroduced++
+					}
 				}
 				if refused {
 					sum.Refusals++
@@ -722,6 +730,31 @@ func (w *workspace) replace(p, oldText, newText string) (string, error) {
 	}
 	// Show the result so the model can see what the file now looks like.
 	return fmt.Sprintf("ok: replaced 1 occurrence in %s%s\n%s", rel, note, around(s, newText, 3)), nil
+}
+
+// syntaxError parses a Python file after an edit and returns the parser's
+// message, or "" if it parses, is not Python, or no parser is available.
+// ast.parse only parses: nothing in the repository is executed on the host.
+// The interpreter here may be newer than the repository's, so a message is a
+// warning for the model, never a verdict.
+func (w *workspace) syntaxError(p string) string {
+	if !strings.HasSuffix(p, ".py") {
+		return ""
+	}
+	full, _, err := w.resolve(p)
+	if err != nil {
+		return ""
+	}
+	py, err := exec.LookPath("python3")
+	if err != nil {
+		return ""
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, py, "-I", "-c",
+		"import ast,sys\ntry:\n ast.parse(open(sys.argv[1],'rb').read(), sys.argv[1])\nexcept SyntaxError as e:\n print(f'{e.msg} (line {e.lineno})')", full)
+	out, _ := cmd.Output()
+	return strings.TrimSpace(string(out))
 }
 
 // replaceLines replaces lines start..end (1-based, inclusive) with newText.

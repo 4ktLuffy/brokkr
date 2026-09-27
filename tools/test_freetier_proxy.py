@@ -87,6 +87,24 @@ class ProxyTest(unittest.TestCase):
             server.shutdown()
             server.server_close()
 
+    def test_concurrent_requests_are_served_in_parallel(self) -> None:
+        # A threaded server answers many clients at once, even past the old
+        # backlog of 5. Use a parked allowance so no request leaves the machine.
+        import concurrent.futures, time
+        self.ledger.park("openrouter", MODEL, "test", utcnow() + timedelta(hours=1))
+        server = freetier_proxy.make_server(0, paced_openai_client(UPSTREAM, "dummy-key-not-real", ledger=self.ledger, timeout=5))
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        try:
+            self.url = f"http://127.0.0.1:{server.server_port}/v1/chat/completions"
+            t0 = time.time()
+            with concurrent.futures.ThreadPoolExecutor(20) as ex:
+                results = list(ex.map(lambda _: self.post({"model": MODEL, "messages": [{"role": "user", "content": "hi"}]}), range(20)))
+            self.assertEqual({r[0] for r in results}, {429})
+            self.assertLess(time.time() - t0, 10)
+        finally:
+            server.shutdown()
+            server.server_close()
+
     def test_streaming_is_not_forwarded(self) -> None:
         self.assertNotIn("stream", freetier_proxy.FORWARD)
 

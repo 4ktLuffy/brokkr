@@ -2,6 +2,7 @@
 """Turn SWE-bench Verified instances into Brokkr tasks. Runs inside the Lima VM.
 
     uv run --with pyarrow scripts/swe/prepare.py --repo django/django --versions 4.0 4.1 4.2
+    uv run --with pyarrow scripts/swe/prepare.py --repo sympy/sympy --versions all
 
 For each (repo, version) it builds one environment image, and for each instance
 one task directory:
@@ -50,20 +51,51 @@ CACHE = Path(os.environ.get("BROKKR_SWE_CACHE", Path.home() / ".cache/brokkr-swe
 ENV_ROOT = Path("/opt/env")  # must match the guest mount point
 UV = shutil.which("uv") or str(Path.home() / ".local/bin/uv")
 
-# From SWE-bench v4.1.0 swebench/harness/constants/python.py (SPECS_DJANGO,
-# TEST_DJANGO, MAP_REPO_TO_REQS_PATHS). Only the versions used here.
-SPECS = {
-    ("django/django", "4.0"): {"python": "3.8"},
-    ("django/django", "4.1"): {"python": "3.9"},
-    ("django/django", "4.2"): {"python": "3.9"},
+# Per repository, from SWE-bench v4.1.0 swebench/harness/constants/python.py
+# (SPECS_*, TEST_*, MAP_REPO_TO_REQS_PATHS) and its get_test_directives.
+def _django_labels(files: list[str]) -> str:
+    # tests/a/b.py -> a.b
+    out = []
+    for f in files:
+        if f.endswith(".py"):
+            f = f[:-3]
+            f = f[len("tests/"):] if f.startswith("tests/") else f
+            out.append(f.replace("/", "."))
+    return " ".join(out)
+
+
+REPOS = {
+    "django/django": {
+        "python": {"4.0": "3.8", "4.1": "3.9", "4.2": "3.9"},
+        "reqs_file": "tests/requirements/py3.txt",
+        "pip": [],
+        "package": "Django",
+        # --parallel 1 as in SWE-bench; PYTHONPATH makes the working copy the
+        # Django that is imported (see module docstring).
+        "test_cmd": "PYTHONPATH=$PWD python3 tests/runtests.py --verbosity 2 --settings=test_sqlite --parallel 1 {labels}",
+        "labels": _django_labels,
+        "parser": "django",
+    },
+    "sympy/sympy": {
+        "python": {},  # every version: 3.9
+        "default_python": "3.9",
+        "reqs_file": None,  # SPECS_SYMPY "packages": "mpmath flake8" plus pip_packages
+        "pip": ["mpmath==1.3.0", "flake8", "flake8-comprehensions"],
+        "package": "sympy",
+        "test_cmd": "PYTHONPATH=$PWD PYTHONWARNINGS='ignore::UserWarning,ignore::SyntaxWarning' bin/test -C --verbose {labels}",
+        "labels": lambda files: " ".join(f for f in files if f.endswith(".py")),
+        "parser": "sympy",
+        # SWE-bench's criterion: required tests pass, exit code ignored. Old
+        # releases have tests that error on Python 3.9 even with the gold patch,
+        # which SWE-bench leaves out of FAIL_TO_PASS/PASS_TO_PASS.
+        "pass_rule": "required_only",
+    },
 }
-REQS = {"django/django": "tests/requirements/py3.txt"}
-PACKAGE = {"django/django": "Django"}
-TEST_CMD = {
-    # --parallel 1 as in SWE-bench; PYTHONPATH makes the working copy the Django
-    # that is imported (see module docstring).
-    "django/django": "PYTHONPATH=$PWD python3 tests/runtests.py --verbosity 2 --settings=test_sqlite --parallel 1 {labels}",
-}
+
+
+def python_for(repo: str, version: str) -> str:
+    c = REPOS[repo]
+    return c["python"].get(version) or c["default_python"]
 
 
 def sh(*args: str, cwd: Path | None = None, check: bool = True, env: dict | None = None) -> subprocess.CompletedProcess:
@@ -103,7 +135,8 @@ def build_env(repo: str, version: str, setup_commit: str) -> Path:
     if image.exists():
         return image
     image.parent.mkdir(parents=True, exist_ok=True)
-    spec = SPECS[(repo, version)]
+    cfg = REPOS[repo]
+    spec = {"python": python_for(repo, version)}
     print(f"env {name}: python {spec['python']}", flush=True)
 
     for child in ENV_ROOT.iterdir():  # /opt/env is owned by us, created once
@@ -120,8 +153,10 @@ def build_env(repo: str, version: str, setup_commit: str) -> Path:
 
     work = CACHE / "build" / name
     export(src_checkout(repo), setup_commit, work)
-    reqs = [l.strip() for l in (work / REQS[repo]).read_text().splitlines()
-            if l.strip() and not l.strip().startswith("#")]
+    reqs = list(cfg["pip"])
+    if cfg["reqs_file"]:
+        reqs += [l.strip() for l in (work / cfg["reqs_file"]).read_text().splitlines()
+                 if l.strip() and not l.strip().startswith("#")]
     skipped: list[dict] = []
     install = lambda *pkgs: sh(UV, "pip", "install", "--python", py, *pkgs, check=False, env=pyenv, cwd=work)
     r = install(*reqs)
@@ -134,7 +169,7 @@ def build_env(repo: str, version: str, setup_commit: str) -> Path:
     r = install(".")
     if r.returncode != 0:
         sys.exit(f"{name}: installing {repo} failed:\n{r.stderr[-2000:]}")
-    sh(UV, "pip", "uninstall", "--python", py, PACKAGE[repo], env=pyenv)
+    sh(UV, "pip", "uninstall", "--python", py, cfg["package"], env=pyenv)
     shutil.rmtree(work)
 
     # Check what the guest will do: run python3 from /opt/env/bin and import a
@@ -147,11 +182,11 @@ def build_env(repo: str, version: str, setup_commit: str) -> Path:
     manifest = {
         "repo": repo, "version": version, "environment_setup_commit": setup_commit,
         "python": pyver, "swebench_spec_python": spec["python"],
-        "requirements_file": REQS[repo], "skipped_requirements": skipped,
+        "requirements_file": cfg["reqs_file"], "pip_packages": cfg["pip"], "skipped_requirements": skipped,
         "installed": freeze.splitlines(),
         "differences_from_swebench": [
             "python from uv standalone builds (arm64), not conda",
-            f"{PACKAGE[repo]} not installed; working copy imported via PYTHONPATH",
+            f"{cfg['package']} not installed; working copy imported via PYTHONPATH",
         ],
     }
     (ENV_ROOT / "brokkr-env.json").write_text(json.dumps(manifest, indent=2))
@@ -168,17 +203,6 @@ def test_files(test_patch: str) -> list[str]:
     return sorted({m for m in re.findall(r"^diff --git a/(\S+) b/", test_patch, re.M)})
 
 
-def django_labels(files: list[str]) -> str:
-    # SWE-bench get_test_directives for django: tests/a/b.py -> a.b
-    out = []
-    for f in files:
-        if f.endswith(".py"):
-            f = f[:-3]
-            f = f[len("tests/"):] if f.startswith("tests/") else f
-            out.append(f.replace("/", "."))
-    return " ".join(out)
-
-
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--dataset", default=str(CACHE / "verified.parquet"))
@@ -188,7 +212,7 @@ def main() -> None:
     args = ap.parse_args()
 
     rows = [r for r in pq.read_table(args.dataset).to_pylist()
-            if r["repo"] == args.repo and r["version"] in args.versions
+            if r["repo"] == args.repo and ("all" in args.versions or r["version"] in args.versions)
             and (not args.ids or r["instance_id"] in args.ids)]
     print(f"{len(rows)} instances", flush=True)
     src = src_checkout(args.repo)
@@ -208,12 +232,13 @@ def main() -> None:
         task = {
             "name": r["instance_id"],
             "issue": r["problem_statement"],
-            "test_cmd": TEST_CMD[args.repo].format(labels=django_labels(files)),
+            "test_cmd": REPOS[args.repo]["test_cmd"].format(labels=REPOS[args.repo]["labels"](files)),
             "timeout_s": 900,
             "protect": files,
             "required_tests": json.loads(r["FAIL_TO_PASS"]) + json.loads(r["PASS_TO_PASS"]),
             "test_patch": "test.patch",
-            "parser": "django",
+            "parser": REPOS[args.repo]["parser"],
+            **({"pass_rule": REPOS[args.repo]["pass_rule"]} if "pass_rule" in REPOS[args.repo] else {}),
             "env_image": os.path.relpath(envs[r["version"]], d),
             "mem_mib": 1024,
             "swebench": {

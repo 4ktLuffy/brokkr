@@ -12,7 +12,7 @@ set -uo pipefail
 here="$(cd "$(dirname "$0")/../.." && pwd)"
 source "$here/scripts/env.sh"
 tasks_dir="${BROKKR_SWE_CACHE:-$HOME/.cache/brokkr-swe}/tasks"
-out="$here/results/swe/validity.jsonl"
+out="${VALIDITY_OUT:-$here/results/swe/validity.jsonl}"   # one file per repo keeps readers of the others safe
 runs="$cache/runs/swe-validity"
 mkdir -p "$runs" "$(dirname "$out")"
 ids=("$@")

@@ -1,6 +1,9 @@
 package verify
 
 import (
+	"fmt"
+	"os"
+	"path/filepath"
 	"reflect"
 	"testing"
 )
@@ -68,5 +71,70 @@ FAIL: test_d (app.tests.T)
 	}
 	if passed["test_f (app.tests.T)"] || passed["test_d (app.tests.T)"] {
 		t.Errorf("skipped or failed test counted as passed: %v", sorted(passed))
+	}
+}
+
+func TestParseSympy(t *testing.T) {
+	log := `============================= test process starts ==============================
+sympy/geometry/tests/test_point.py[3]
+test_point ok
+test_issue_11617 F
+test_transform E
+________________________________________________________________________________
+_________ sympy/geometry/tests/test_point.py:test_issue_11617 __________
+AssertionError
+`
+	passed, failed := parseSympy(log)
+	if !passed["test_point"] || passed["test_issue_11617"] || passed["test_transform"] {
+		t.Errorf("passed = %v", sorted(passed))
+	}
+	for _, f := range []string{"test_issue_11617", "test_transform", "sympy/geometry/tests/test_point.py:test_issue_11617"} {
+		if !failed[f] {
+			t.Errorf("%q not failed; failed = %v", f, sorted(failed))
+		}
+	}
+}
+
+// stubRunner writes a runner that reports exit code `exit` and the given
+// unittest-style log, without booting anything.
+func stubRunner(t *testing.T, exit int, log string) string {
+	t.Helper()
+	d := t.TempDir()
+	os.WriteFile(filepath.Join(d, "log"), []byte(log), 0o644)
+	r := filepath.Join(d, "runner.sh")
+	os.WriteFile(r, []byte(fmt.Sprintf(`#!/bin/sh
+while [ $# -gt 0 ]; do [ "$1" = --out ] && out=$2; shift; done
+mkdir -p "$out"; cp %q "$out/stderr.log"; : > "$out/stdout.log"
+echo '{"guest":{"exit_code":%d,"timed_out":false,"run_ms":1},"error":null}'
+`, filepath.Join(d, "log"), exit)), 0o755)
+	return r
+}
+
+func TestPassRule(t *testing.T) {
+	repo := t.TempDir()
+	os.WriteFile(filepath.Join(repo, "a.py"), []byte("x\n"), 0o644)
+	both := "test_a (m.C.test_a) ... ok\ntest_b (m.C.test_b) ... ok\n"
+	onlyA := "test_a (m.C.test_a) ... ok\n"
+	cases := []struct {
+		rule, log string
+		exit      int
+		want      Verdict
+	}{
+		{"required_only", both, 1, Pass},  // SWE-bench's criterion: exit code ignored
+		{"required_only", onlyA, 1, Fail}, // a required test missing still fails
+		{"required_only", "", 0, Fail},    // early exit: nothing reported
+		{"", both, 1, Fail},               // default rule unchanged: exit 0 required
+		{"exit_and_required", both, 0, Pass},
+		{"bogus", both, 0, Error},
+	}
+	for _, c := range cases {
+		task := Task{Name: "t", TestCmd: "x", RequiredTests: []string{"m.C.test_a", "m.C.test_b"}, PassRule: c.rule}
+		ev, err := Run(Config{Runner: stubRunner(t, c.exit, c.log)}, task, repo, "", t.TempDir())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if ev.Verdict != c.want {
+			t.Errorf("rule=%q exit=%d log=%q: verdict %s, want %s (%v)", c.rule, c.exit, c.log, ev.Verdict, c.want, ev.Reasons)
+		}
 	}
 }

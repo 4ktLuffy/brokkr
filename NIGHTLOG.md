@@ -301,3 +301,280 @@ Where things stand:
 
 qwen's held-out run had not finished a task when stopped. The 0.4/0.5/0.6 dev
 comparison is incomplete, so no held-out run with a newer harness took place.
+
+---
+
+# Night 2: 2026-09-27
+
+**About timestamps:** at 01:03 I found I had been writing estimated times that
+ran up to 40 minutes ahead of the clock. Night-2 entries up to then are corrected
+and marked ≈; from here on, times come from `date`. Night-1 times were partly
+estimated too and should be read as approximate order, not exact times.
+
+**Where it started:** the first commit `5eb261b` is public at github.com/4ktLuffy/brokkr.
+LICENSE (Apache-2.0, official text, sha256 `cfc7749b…`) is staged as its own
+commit, awaiting approval. Nothing is committed or pushed tonight without
+approval.
+
+**Plan for the night:**
+1. Finish the pre-registered 0.3.1 held-out baselines: Codestral's 55 remaining
+   tasks, and qwen3.5 in order.
+2. Finish the dev comparison with harness 0.6.1 (Codestral, all 10 dev tasks).
+3. Give 0.6.1 a held-out run only if it beats 0.3 on dev, under a rule recorded
+   beforehand.
+4. Build a combined report that merges each model's result directories.
+
+### 00:40 Resumed
+- VM started; freetier proxy on 11501 (15M/day); UTC 09-26 usage 0.
+- Built 0.6.1 from the committed source and installed it as a separate binary.
+- plan.json amended with the resume rule before relaunching.
+
+### 00:50 Six runs going; report merges columns
+- Codestral 0.3.1 held-out: 3 shards covering 55 tasks. qwen 0.3.1 held-out, in
+  order. Dev: 0.3.0 on its 2 missing tasks, and 0.6.1 on all 10. All six confirmed
+  running on the expected first tasks.
+- plan.json amended before any 0.6.1 run: 0.6.1 gets one held-out run only if it
+  verifies strictly more dev tasks than 0.3.0 over the same 10.
+- `scripts/report.py --col "Label=dir1,dir2"` merges runs across nights and shards.
+  Infra rows for tasks later rerun are dropped; two scored rows for one task is an
+  error, never a silent choice. Difficulty comes from `results/swe/difficulty.json`,
+  taken from the dataset.
+
+### ≈00:52 Second repository: SymPy (75 tasks)
+- **Why:** Django-only was a stated limit. SymPy is the next largest repo in
+  Verified, pure Python, and uses one Python version (3.9) throughout.
+- **Parser:** a Go port of SWE-bench v4.1.0's `parse_log_sympy`. Verifier version
+  0.2.0 is now recorded in every evidence file (0.1 had unittest and django).
+  `crosscheck_parser.py` now picks the original parser named in each task's
+  evidence. Still identical on Django logs.
+- **`prepare.py` refactored** to per-repo configs from SWE-bench v4.1.0: Django
+  (unchanged) and SymPy (mpmath==1.3.0, flake8, flake8-comprehensions;
+  `bin/test -C --verbose <test files>`).
+- **Regression check:** regenerating all 94 Django tasks' test commands, parsers and
+  protected lists gives **0 differences**.
+
+### ≈00:56 `brokkr bundle`: a review package with the evidence (the approval gate)
+- **The gap:** the README promised verified fixes become draft PRs behind human
+  approval, but nothing produced a PR.
+- `brokkr bundle --run DIR --out DIR` writes `patch.diff` and `pr.md`. `pr.md` has the
+  issue title, the agent's own summary, whether its claim matches the verdict, the
+  required tests passing, and hashes of the repo, patch, patched tree, hidden test
+  patch, kernel, rootfs and env, plus model, harness, turns, tokens and time.
+- **It never pushes.** For a verified run it prints the `git apply` + `gh pr create
+  --draft` command for a human to run. A run that did not verify is marked NOT
+  READY and exits 1.
+- **Tried on real runs:** Codestral 0.4 `14373` → READY (20/20 required); `14787` →
+  NOT READY. Unit tests cover the ready path and an over-claim ("does not match").
+- **A mistake I repeated:** a Python heredoc turned `\n` in Go strings into real
+  newlines (the third time tonight). Caught by the compiler.
+
+### ≈00:58 `scripts/make-report.sh` → `results/REPORT.md`
+- Every column is defined by directory globs in one script, and night-1 + night-2
+  and shard directories are merged per model and harness, so the report is
+  reproducible.
+- **Bug caught:** a glob with no matches (a column not run yet) made `ls` fail, and
+  `set -euo pipefail` aborted the script silently with no file written. Fixed: an
+  empty glob is an absent column.
+
+### ≈01:02 SymPy prepared; a pass-rule question settled against SWE-bench
+- **Prepared:** 75 tasks and 12 envs (one per SymPy version), all Python 3.9.25, 6
+  packages each, 0 skipped. `prepare.py` took 7 min.
+- **First validation, sympy__sympy-11618:** the gold patch passes all 5 required
+  tests, but `bin/test` exits 1. `test_point` hits a RecursionError on Python 3.9 even
+  with the gold patch, and **SWE-bench leaves it out of the required lists**; in
+  SWE-bench's own setup this task counts as resolved. The parser cross-check agrees
+  (SAME).
+- **Verifier 0.3 adds a per-task `pass_rule`.** Default `exit_and_required` is
+  unchanged, and every Django task and all Django results stay on it. SymPy tasks use
+  `required_only`, SWE-bench's criterion: every required test passes and the exit
+  code is ignored.
+- **Tests through `verify.Run`:**
+  - `required_only` passes on exit 1 when all required tests pass;
+  - it still fails if a required test is missing, or if nothing is reported (the
+    early-exit cheat);
+  - the default still fails on exit 1;
+  - an unknown rule is an error.
+- **11618 now:** baseline FAIL, gold PASS.
+- **SymPy split fixed before any validation or agent run:**
+  `results/swe/split-sympy.json` (sha256 `8c1ae274…`), 10 dev and 65 held-out.
+- **Validation of all 75** is running on verifier 0.3 and writes to its own
+  `validity-sympy.jsonl`, so running Django evals never read a half-written line.
+
+### 01:49 A client bug lost one task; fixed without touching the baseline
+- **Symptom:** Codestral held-out `django__django-15382` (0.3.1, shard 2) ended as infra
+  with "cannot unmarshal array into ... content of type string". Mistral sometimes
+  returns `content` as a list of parts (`[{"type":"text","text":...}]`), and
+  Brokkr's model client accepted only a string.
+- **Fix:** `model.Message` accepts a string, null or a list of parts, keeping text
+  parts and dropping "thinking" parts. Tests cover all forms, and check that tool
+  calls survive and request encoding is unchanged.
+- **The pre-registered 0.3.1 baseline keeps its original binary.** 15382 stays in its
+  column as infra (unscored), with this cause.
+- **Swapped at 01:49:56**, by atomic rename, the `brokkr-0.6.1` (Django dev) and
+  `brokkr-v0.3` (SymPy) binaries for a build with the fix. Running tasks kept the
+  old file; later tasks use the fix. It only changes how replies are decoded. The
+  new 0.6.1 build also carries verifier 0.3, which leaves Django scoring unchanged
+  (no pass_rule) and is recorded per evidence file.
+- **Django dev, 0.3.0 complete:** 1/10 verified (the 2 missing tasks are now done,
+  both FAIL).
+
+### 02:03 A correct fix excluded by a false infra stop (kept excluded, and shown)
+- qwen held-out `django__django-14580` (0.3.1): the final patch verifies PASS against
+  the hidden tests, but the run was stopped as "context truncated". The reported
+  prompt dropped by 26 tokens (13,471 → 13,445) at 13K of a 32K window: the
+  false-positive rule that 0.6.1 fixes.
+- The pre-registered rule makes infra runs unscored, so it does **not** count for
+  qwen. The report now has an "of which PASS" column for infra runs, so the
+  undercount is visible rather than hidden.
+
+### 02:19 SymPy dev: the low score is real; one idea for 0.7
+- **Instrument check first:** in 2 of Codestral's 3 SymPy dev failures *every* required
+  test was missing (103/103, 11/11). That looked like a verifier problem, but it is
+  not.
+- In `sympy__sympy-13798` the agent's patch left a stray `}` in
+  `sympy/printing/latex.py`, so SymPy cannot be imported and every test goes
+  missing: a genuine FAIL.
+- **Idea for 0.7 (not run tonight until tested on dev):** after every edit to a `.py`
+  file, parse it with `ast.parse`, which parses and never executes code, and report
+  a SyntaxError with its line in the tool result, so a broken edit is caught at once
+  instead of at the end.
+- 02:34: a second 0.3.1 baseline task lost to the same content-list bug: `django__django-15561` (shard 1). It is unscored, like 15382.
+
+### 02:59 SymPy validation complete: 75/75 valid
+- All 75 SymPy tasks pass the validity check (no patch → FAIL, gold → PASS) on
+  verifier 0.3 with `required_only`. The parser cross-check agrees with SWE-bench's
+  `parse_log_sympy` on all 150 logs.
+- Together with Django's 92/94, **167 of 169 prepared SWE-bench Verified tasks are
+  valid** in Brokkr's Firecracker setup.
+- First SymPy dev pass: Codestral (h0.6.1) on `sympy__sympy-13877`.
+- 03:21: 0.3.1 baseline `django__django-15499` stopped by the old truncation false positive (11,521 → 11,474 at 11.5K of 250K). Unscored under the rule; this flaw is fixed in 0.6.1.
+
+### 03:29 Django dev comparison done; 0.6.1 qualifies for its held-out run
+- Codestral dev, same 10 tasks: **0.3.0 1/10, 0.6.1 2/10** (0.6.1 passed 15731 and 14373). Under the rule recorded before any 0.6.1 run (strictly more than 0.3.0), 0.6.1 gets one Codestral held-out run on the 82 valid Django held-out tasks. It uses the client-fixed build, in 3 shards and split order, and is reported as its own column.
+- **Caveat:** one task of difference on 10 is weak evidence. The held-out run, not the dev score, is what says whether 0.6.1 is better.
+
+### 03:49 SymPy dev done (2/10); SymPy held-out started
+- Codestral h0.6.1 on the 10 SymPy dev tasks: **2/10** (13877, 19346). Two runs stopped as stuck (13031, 15875); one patch left a syntax error (13798).
+- As recorded before, the harness is not changed between SymPy dev and held-out. Held-out: 65 tasks, 2 shards, split order.
+- Also running: Codestral h0.6.1 on Django held-out (82 tasks, 3 shards), the last task of the 0.3.1 baseline, qwen 0.3.1 in order, and next the 0.7 dev run.
+
+### 03:53 Pre-registered baseline complete: Codestral h0.3.1, Django held-out
+- **11 of 79 scored (14%)**. All 82 valid held-out tasks were run; 3 are infra and
+  unscored (15382 and 15561, content-list client bug; 15499, old truncation false
+  positive).
+- **By SWE-bench difficulty:**
+
+  | Difficulty | Verified |
+  |---|---|
+  | <15 min | 10/35 (29%) |
+  | 15 min–1 h | 1/36 |
+  | 1–4 h | 0/8 |
+
+- **Over-claims:** the agent claimed a fix 40 times and was wrong 30 times (75%).
+  Brokkr's verification caught every one; without it, 30 of 40 "fixes" would have
+  been wrong.
+- **qwen3.5-9B (local) h0.3.1, first 7 in order:** 2/7 scored, plus one verified
+  PASS excluded as infra (14580, the false truncation stop).
+
+### 04:20 Throughput is limited by Mac memory, not the VM's CPU
+- VM load is low (1–3.7 on 8 vCPUs), but the Mac has 17% memory free and **18 GB of
+  swap in use**. Most of the Lima VM is swapped out (0.76 GB resident).
+- **Main competitor:** Henos's Colima `default` VM, an **x86_64 VM emulated in software
+  (QEMU TCG) with 6 GB and 4 CPUs**, up 1d17h and running `lodgepg` (postgres:16)
+  and `omotic-searxng`. Not Brokkr's, so **not stopped**. It is Henos's call: stopping
+  it, or moving those services to the arm64 profile, would speed up Brokkr runs.
+- The local qwen model takes 6 GB. I kept every pre-registered run as planned rather
+  than pause one; runs are slower but unchanged.
+
+### 04:35 Paired comparisons with an exact test (`scripts/compare.py`)
+- Two runs are compared only on the tasks both scored. The verdict "is one better"
+  rests on the discordant tasks, with an exact two-sided McNemar test. Checked
+  against known values: 0 vs 5 → 0.0625, 1 vs 1 → 1.0, 0 vs 10 → 0.00195.
+- `make-report.sh` now appends Codestral 0.3.1 vs 0.6.1, and Codestral vs qwen3.5
+  (both harness 0.3.1).
+- **Interim:** qwen 4/9 vs Codestral 1/9 on the same 9 tasks (3–0 discordant, p = 0.25).
+  Codestral 0.6.1 4/14 vs 0.3.1 2/14 (2–0, p = 0.5). **Neither is a result yet**;
+  both need more tasks.
+
+### 05:36 Proxy was single-threaded: one lost task, and a likely cause of slow runs
+- SymPy held-out `sympy__sympy-20154` ended as infra with "dial tcp ... :11501: i/o
+  timeout": the agent could not connect to the freetier proxy.
+- **Cause:** `tools/freetier_proxy.py` used Python's single-threaded `HTTPServer`,
+  which serves one request at a time and queues at most 5 connections. With 7
+  concurrent Codestral agents, requests were serialised behind each other, and
+  connections beyond the backlog were dropped. This probably slowed every Codestral
+  run tonight.
+- **Fix:** a `ThreadingHTTPServer` with a backlog of 128. freetier's Ledger and Pacer
+  share one `threading.Lock` and are thread-safe. A new test sends 20 concurrent
+  requests, all answered in well under 10 s.
+- The running evals keep proxy 11501, since restarting it would break about 7
+  in-flight requests. A threaded proxy is up on **11502** for new runs.
+
+### 05:45 Harness 0.7 on Django dev: 1/9 scored. No held-out run (rule)
+- Codestral h0.7.0: 1 of 9 scored (14373), plus 1 infra (15280, model error). Even if
+  that task passed on a rerun, 2/10 is not strictly more than 0.6.1's 2/10, so under
+  the rule recorded beforehand **0.7 gets no held-out run**.
+- **The syntax check itself is correct:** on 14787 it fired 25 times with the same
+  real error ("expected an indented block after 'if' on line 52"; the original file
+  parses under 3.12). Codestral kept editing elsewhere and never fixed it, ending
+  with a 233-line patch. The check detects the problem; this model does not act on
+  it.
+- Harness ranking on Django dev with Codestral (10 tasks each; small samples):
+  0.4 3/8 scored, 0.6.1 2/10, 0.6.0 2/5 (incomplete), 0.3.0 1/10, 0.7 1/9, 0.5 0/6
+  (incomplete). No version stands out beyond noise; the one with a held-out run
+  is 0.6.1.
+
+### 05:46 CI workflow for the public repo
+- `.github/workflows/ci.yml`: gofmt, go vet, go test and build; the Rust runner build (`--locked`); bash and Python syntax. No KVM is needed; Firecracker gates stay on the reference machine.
+- Checked before writing it: the Go test binaries, compiled for linux/arm64, pass inside the VM; `cargo build --locked` succeeds in a separate target dir (the live runner binary untouched); all other steps pass locally.
+- The freetier proxy tests are left out, with a comment, until freetier is published.
+
+### 06:06 README results section, filled from results/ by a script
+- The README has a 'Results on SWE-bench Verified' block. `scripts/fill-readme-results.py` fills it from the result directories (same globs as make-report, the same scoring, the same exact test), so no number in the README is typed by hand. It is marked in progress until the runs finish.
+- **At 06:05:** Codestral 0.6.1 held-out 9/36 (25%) scored so far. Paired with 0.3.1 on 35 shared tasks: 9 vs 4 (5–0 discordant, p = 0.062). qwen3.5 vs Codestral on 13 shared tasks: 6 vs 1 (p = 0.062). SymPy held-out 4/25.
+
+### 06:17 My own 15M cap parked Codestral; raised to 30M and resumed
+- At 06:16 local all Codestral runs parked: **14.96M tokens in the first 3h16m of UTC
+  day 09-27** (2096 requests, seven agents at about 4.6M tokens/hour). Mistral had
+  not rate-limited once in four days (0 hits in the ledger). Parked runs stopped
+  cleanly and were not scored, as designed.
+- **The cap is raised to 30M/day,** with the measurement written into
+  `dev/freetier/providers.yaml`. It is still self-imposed and below the reported
+  ~1B/month; a real Mistral 429 parks cleanly.
+- **Resumed per plan.json (amended before resuming):** every valid held-out task with
+  no scored row, in split order. That is 42 Django tasks (0.6.1, 3 shards) and 38
+  SymPy tasks (2 shards), through the threaded proxy on 11502.
+- Caught while resuming: the SymPy resume directories (`...-n2-h061r-...`) would not
+  have matched the report's SymPy glob and would have been silently left out. The
+  globs in make-report and fill-readme are fixed.
+
+### 07:08 The README stated something the data had outgrown; now generated
+- At 07:08 both paired comparisons reached p = 0.031 (6–0 discordant each), while the template still said "neither is statistically clear". The note is now generated from the p-values.
+- It says what they show and what they do not: with **two** comparisons the Bonferroni threshold is 0.025, so 0.031 is not below it; and these are **interim looks** at unfinished runs, which inflate false positives. **Provisional, consistent in direction, not settled.**
+
+### 07:26 Stopped by request; resume tonight
+Everything was stopped at 07:26: VM (11 agent/firecracker processes), both proxies,
+and the local model. Runs cut off at that moment left no scored row. Under
+plan.json's resume rule they are rerun, not counted.
+
+**To resume tonight, in plan order, with the same binaries:**
+- Codestral h0.6.1, Django held-out: 22 tasks left (82 valid).
+- Codestral h0.6.1, SymPy held-out: 25 tasks left (65 valid).
+- qwen3.5 h0.3.1, Django held-out: 64 tasks left, in split order. At about 30 min
+  per task this needs several nights, or a rule for when to stop.
+
+**Numbers at the stop** (`results/REPORT.md` and the README block are regenerated):
+
+| Run | Scored | Verified | Notes |
+|---|---|---|---|
+| Codestral h0.3.1 Django (complete) | 79 | 11 (14%) | 30 of 40 "fixed" claims wrong |
+| Codestral h0.6.1 Django | 60 | 13 (22%) | |
+| qwen3.5 h0.3.1 Django | 18 | 9 (50%) | |
+| Codestral h0.6.1 SymPy | 40 | 5 (12%) | |
+
+- Paired: qwen vs Codestral 9 vs 3 of 18 (p = 0.031). 0.6.1 vs 0.3.1 13 vs 8 of 58
+  (p = 0.125; it was 0.031 an hour earlier, which is why interim looks are
+  provisional).
+
+**Awaiting Henos:** commit 1 (LICENSE, staged); commit 2 (night-2 work, diff to show).
+Nothing was committed or pushed tonight.
