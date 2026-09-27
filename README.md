@@ -277,4 +277,4 @@ separately, not mixed in.
 
 ## License
 
-Apache-2.0 (to be added with the first code).
+Apache-2.0. See [LICENSE](LICENSE).
