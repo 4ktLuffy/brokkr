@@ -769,3 +769,26 @@ needed and was cancelled, which also ended caffeinate. VM and proxy stopped.
   qwen passed in 5 turns; `served_by` and the sampling were recorded.
 - **Not yet shown for real:** a mid-run fallback or escalation against live
   servers (fake-server tests only). No routed evaluation has been run.
+
+### 19:43 Sandbox slots instead of snapshots (measurements changed the plan)
+- Past runs lost a median of 22 s (up to 90 s) per VM outside the tests. Alone,
+  a Django run loses 2.8 s: boot 1.1, `chown` 0.9, teardown 0.6, host 0.2.
+- **Hypotheses tested and rejected:**
+  - `.pyc` flushing on sync: writing every Django `.pyc` added nothing;
+  - guest clock drift: a 30 s sleep measured 30.1 s.
+- **Cause: concurrency.** Reproduced with 1, 4 and 8 concurrent VMs (8 gave 19.8 s
+  outside the command). A pure-CPU command ran 8x slower at 8 VMs, and a 4-vCPU
+  VM ran 4 jobs no faster than 1 vCPU. Plain processes in Lima do scale (305 ms
+  for 1, 547 ms for 8). Nested microVMs share about one core on this Mac.
+- **Decision:**
+  - No snapshots: they would save at most about 1 s of a ~50 s run, and restored
+    VMs would share memory and RNG state.
+  - Built host-wide sandbox slots instead: flock lock files, released by the
+    kernel if a process dies, with the queue wait recorded as `sandbox_queue_ms`.
+- **Slot count from data** (8 compileall runs): 1 slot 42.8 s, 2 slots 32.0 s,
+  4 slots 35.8 s, 8 slots 41.5 s. Default 2.
+- **Real check:** 8 concurrent brokkr verify runs of a Django task, all PASS. No
+  cap: 457 s, with 448 s VM time per run (half the task's 900 s timeout). 2 slots:
+  339 s, with 82 s per run.
+- The overnight 7-agent runs had their sandbox time serialized like this. Their
+  verdicts stand (no run timed out), but their wall times are not per-VM costs.

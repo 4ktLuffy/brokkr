@@ -158,6 +158,34 @@ makes a live copy of a historical task that keeps its hidden tests. A run of
 that copy records both verdicts, which measures whether the agent's own test
 agrees with the maintainers' tests.
 
+## Sandbox slots: measured, not guessed
+
+The plan was snapshots (restore a booted microVM) and a pool of parallel VMs.
+Measurements on the M4 Mac changed it:
+
+- **Per-run overhead is small.** A Django run spends about 2.8 s outside the
+  tests: 1.1 s boot, 0.9 s `chown`, 0.6 s shutdown, 0.2 s host-side. A
+  snapshot could save about 1 s of a roughly 50 s run, and restored VMs would
+  share memory and random-number state. Not built.
+- **Nested virtualization gives all microVMs about one core together.** 8
+  CPU-bound microVMs each ran 8x slower. One microVM with 4 vCPUs ran 4 jobs
+  no faster than with 1. Plain processes in the Lima VM do scale.
+- **So too many VMs at once only makes each one slower.** This explained the
+  22 s median "overhead" in past runs, which ranged up to 90 s.
+
+Brokkr now caps microVMs running at once, host-wide, across processes, with
+lock files (`BROKKR_SANDBOX_SLOTS`, default 2 in `scripts/env.sh`). A run over
+the cap waits, and the wait is recorded as `sandbox_queue_ms`, apart from the
+VM time. 8 concurrent real Django verifies:
+
+| | Batch | VM time per run | Wait |
+|---|---|---|---|
+| no cap | 457 s | 448 s | 0 s |
+| 2 slots | 339 s | 82 s | 123 s |
+
+On a bare-metal Linux server, raise the cap toward the core count. That is
+where a VM pool pays off.
+
 ## Model routing
 
 `brokkr fix --routes dev/routes.json` sends the agent's model calls through a

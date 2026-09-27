@@ -89,6 +89,9 @@ type Evidence struct {
 	Reasons   []string        `json:"reasons"`
 	Tests     TestResults     `json:"tests"`
 	Sandbox   json.RawMessage `json:"sandbox,omitempty"`
+	// QueueMS is how long the run waited for a sandbox slot, not included
+	// in the sandbox's vm_wall_ms.
+	QueueMS int64 `json:"sandbox_queue_ms,omitempty"`
 }
 
 type Inputs struct {
@@ -110,6 +113,10 @@ type Config struct {
 	// CollectOnly runs the tests and records per-test statuses but gives no
 	// verdict (Collected). Used to derive required tests; never for scoring.
 	CollectOnly bool
+	// Slots limits microVMs running at once on this host, across processes
+	// (see slots.go); 0 is no limit. SlotDir holds the lock files.
+	Slots   int
+	SlotDir string
 }
 
 // Run verifies patchPath (empty for "no patch") against the repo at repoDir and
@@ -204,9 +211,15 @@ func Run(cfg Config, task Task, repoDir, patchPath, outDir string) (*Evidence, e
 	if task.MemMiB > 0 {
 		args = append(args, "--mem-mib", fmt.Sprint(task.MemMiB))
 	}
+	release, waited, err := acquireSlot(cfg.SlotDir, cfg.Slots)
+	if err != nil {
+		return finish(Error, err.Error())
+	}
+	ev.QueueMS = waited.Milliseconds()
 	runner := exec.Command(cfg.Runner, args...)
 	runner.Stderr = os.Stderr
 	report, runErr := runner.Output()
+	release()
 	ev.Sandbox = json.RawMessage(bytes.TrimSpace(report))
 
 	var rep struct {

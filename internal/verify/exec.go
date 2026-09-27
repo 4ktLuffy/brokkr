@@ -16,6 +16,7 @@ type ExecResult struct {
 	TimedOut bool
 	Stdout   string
 	Stderr   string
+	QueueMS  int64 // waited for a sandbox slot
 }
 
 // Exec runs cmd in a fresh microVM against repoDir with patchPath applied (if
@@ -51,7 +52,12 @@ func Exec(cfg Config, task Task, repoDir, patchPath, cmd string, timeoutS int, o
 	if task.MemMiB > 0 {
 		args = append(args, "--mem-mib", fmt.Sprint(task.MemMiB))
 	}
+	release, waited, err := acquireSlot(cfg.SlotDir, cfg.Slots)
+	if err != nil {
+		return nil, err
+	}
 	report, _ := exec.Command(cfg.Runner, args...).Output()
+	release()
 	var rep struct {
 		Guest *struct {
 			ExitCode int  `json:"exit_code"`
@@ -71,5 +77,5 @@ func Exec(cfg Config, task Task, repoDir, patchPath, cmd string, timeoutS int, o
 	}
 	stdout, _ := os.ReadFile(filepath.Join(outDir, "stdout.log"))
 	stderr, _ := os.ReadFile(filepath.Join(outDir, "stderr.log"))
-	return &ExecResult{ExitCode: rep.Guest.ExitCode, TimedOut: rep.Guest.TimedOut, Stdout: string(stdout), Stderr: string(stderr)}, nil
+	return &ExecResult{ExitCode: rep.Guest.ExitCode, TimedOut: rep.Guest.TimedOut, Stdout: string(stdout), Stderr: string(stderr), QueueMS: waited.Milliseconds()}, nil
 }

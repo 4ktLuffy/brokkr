@@ -101,7 +101,8 @@ func main() {
 			*p = filepath.Join(filepath.Dir(*taskPath), *p)
 		}
 	}
-	vc := verify.Config{Runner: *runner, Host: *host}
+	vc := verify.Config{Runner: *runner, Host: *host, Slots: envInt("BROKKR_SANDBOX_SLOTS", 0),
+		SlotDir: envOr("BROKKR_SLOT_DIR", filepath.Join(os.TempDir(), "brokkr-slots"))}
 
 	var v verify.Verdict
 	var reasons []string
