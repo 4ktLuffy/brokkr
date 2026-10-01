@@ -3,6 +3,8 @@
 //	brokkr verify --task T.json --repo DIR [--patch P.patch] --out DIR
 //	brokkr fix    --task T.json --repo DIR --out DIR [--model NAME] [--model-url URL]
 //	brokkr selftest --task T.json --repo DIR --patch P --out DIR   (live tasks)
+//	brokkr mutate --task T.json --repo DIR --patch P --out DIR   (does the agent's test pin the fix?)
+//	brokkr minimize --task T.json --repo DIR --patch P --out DIR [--max-runs N] [--granularity hunk|line]
 //	brokkr route  --routes dev/routes.json --for owner/repo   (which backend, and why)
 //
 // Exit status: 0 PASS, 1 FAIL, 3 REJECTED, 2 ERROR or bad usage,
@@ -30,8 +32,11 @@ const usage = `usage:
   brokkr verify --task T.json --repo DIR [--patch P] --out DIR
   brokkr fix    --task T.json --repo DIR --out DIR [--model NAME] [--model-url URL]
   brokkr selftest --task T.json --repo DIR --patch P --out DIR
+  brokkr mutate --task T.json --repo DIR --patch P --out DIR [--max-mutants N]
+  brokkr minimize --task T.json --repo DIR --patch P --out DIR [--max-runs N] [--granularity hunk|line]
   brokkr route  --routes R.json --for owner/repo [--results GLOB]
-  brokkr bundle --run RUN_DIR --out DIR`
+  brokkr bundle --run RUN_DIR --out DIR
+  brokkr replay --run RUN_DIR [--compare RUN_DIR] --out replay.html [--max-result N]`
 
 func main() {
 	if len(os.Args) < 2 {
@@ -40,6 +45,18 @@ func main() {
 	}
 	if os.Args[1] == "bundle" {
 		bundleCmd(os.Args[2:])
+		return
+	}
+	if os.Args[1] == "replay" {
+		replayCmd(os.Args[2:])
+		return
+	}
+	if os.Args[1] == "mutate" {
+		mutateCmd(os.Args[2:])
+		return
+	}
+	if os.Args[1] == "minimize" {
+		minimizeCmd(os.Args[2:])
 		return
 	}
 	if os.Args[1] == "route" {
@@ -55,7 +72,7 @@ func main() {
 	var patch, modelName, modelURL *string
 	var collect *bool
 	var maxTurns, maxTests, ctxTokens, maxReply, compactAbove *int
-	var strict *bool
+	var strict, codeTools *bool
 	var temp, topP, presence *float64
 	var reasoning, routes, results *string
 	switch os.Args[1] {
@@ -71,6 +88,7 @@ func main() {
 		ctxTokens = fs.Int("context-tokens", envInt("BROKKR_CONTEXT_TOKENS", 16384), "model context window as served; 0 disables the overflow check")
 		maxReply = fs.Int("max-reply-tokens", envInt("BROKKR_MAX_REPLY_TOKENS", 2048), "cap on each model reply (thinking counts toward it)")
 		strict = fs.Bool("strict-edits", os.Getenv("BROKKR_STRICT_EDITS") == "1", "exact-match edits only (ablation)")
+		codeTools = fs.Bool("code-tools", os.Getenv("BROKKR_CODE_TOOLS") == "1", "add find_definition, find_usages, outline and a static check after .py edits (needs python3 on the host)")
 		temp = fs.Float64("temperature", envFloat("BROKKR_TEMPERATURE", 0), "sampling temperature")
 		topP = fs.Float64("top-p", envFloat("BROKKR_TOP_P", 0), "nucleus sampling; 0 leaves the server default")
 		presence = fs.Float64("presence-penalty", envFloat("BROKKR_PRESENCE_PENALTY", 0), "0 leaves the server default")
@@ -96,7 +114,7 @@ func main() {
 		die(fmt.Errorf("task %s: %w", *taskPath, err))
 	}
 	// Paths inside a task file are relative to the task file.
-	for _, p := range []*string{&task.TestPatch, &task.EnvImage} {
+	for _, p := range []*string{&task.TestPatch, &task.EnvImage, &task.Rootfs} {
 		if *p != "" && !filepath.IsAbs(*p) {
 			*p = filepath.Join(filepath.Dir(*taskPath), *p)
 		}
@@ -144,7 +162,7 @@ func main() {
 		}
 		sum, err := agent.Run(context.Background(), agent.Config{
 			Model: client, Router: router, Verify: vc, MaxTurns: *maxTurns, MaxTestRuns: *maxTests,
-			ContextTokens: *ctxTokens, StrictEdits: *strict, CompactAbove: *compactAbove,
+			ContextTokens: *ctxTokens, StrictEdits: *strict, CompactAbove: *compactAbove, CodeTools: *codeTools,
 		}, task, *repo, *out)
 		if err != nil {
 			die(err)

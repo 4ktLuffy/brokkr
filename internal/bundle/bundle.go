@@ -149,6 +149,13 @@ func Write(runDir, outDir string) (*Result, error) {
 		fmt.Fprintf(&b, "| New tests failing before the fix | %s |\n", orNone(strings.Join(st.FailBefore, ", "), "none"))
 		fmt.Fprintf(&b, "| Existing tests broken | %d |\n", len(st.Regressions))
 		fmt.Fprintf(&b, "| Self-test runs (original + test / whole patch) | %s / %s |\n", st.RunA, st.RunB)
+		// Written by `brokkr mutate --out RUN_DIR`: does the test pin the fix?
+		var mu struct {
+			Killed, Survived int
+		}
+		if readJSON(filepath.Join(runDir, "mutate.json"), &mu) == nil && mu.Killed+mu.Survived > 0 {
+			fmt.Fprintf(&b, "| Mutation score of the agent's test | %d of %d broken versions of the fix caught |\n", mu.Killed, mu.Killed+mu.Survived)
+		}
 	}
 	if hidden {
 		req := len(ev.Task.RequiredTests)

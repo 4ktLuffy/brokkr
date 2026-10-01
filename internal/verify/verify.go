@@ -72,7 +72,11 @@ type Task struct {
 	// Live marks a task judged by the agent's own regression test (SelfTest)
 	// rather than, or in addition to, hidden tests. NewTestsDir is where that
 	// test must be created (as a new test_brokkr_*.py file).
-	Live        bool   `json:"live,omitempty"`
+	Live bool `json:"live,omitempty"`
+	// Rootfs selects another guest root image (e.g. one with a C/C++
+	// toolchain, scripts/build-rootfs-cc.sh); empty uses the runner's default.
+	// Its sha256 is recorded in the evidence like the default's.
+	Rootfs      string `json:"rootfs,omitempty"`
 	NewTestsDir string `json:"new_tests_dir,omitempty"`
 	MemMiB      int    `json:"mem_mib,omitempty"`
 }
@@ -211,6 +215,9 @@ func Run(cfg Config, task Task, repoDir, patchPath, outDir string) (*Evidence, e
 	if task.MemMiB > 0 {
 		args = append(args, "--mem-mib", fmt.Sprint(task.MemMiB))
 	}
+	if task.Rootfs != "" {
+		args = append(args, "--rootfs", task.Rootfs)
+	}
 	release, waited, err := acquireSlot(cfg.SlotDir, cfg.Slots)
 	if err != nil {
 		return finish(Error, err.Error())
@@ -254,7 +261,10 @@ func Run(cfg Config, task Task, repoDir, patchPath, outDir string) (*Evidence, e
 	case "pytest":
 		passed, failed = parsePytest(string(append(stdout, stderr...)))
 	default:
-		return finish(Error, "unknown parser "+task.Parser)
+		var ok bool
+		if passed, failed, ok = parseMultilang(task.Parser, string(append(stdout, stderr...))); !ok {
+			return finish(Error, "unknown parser "+task.Parser)
+		}
 	}
 	ev.Tests.Passed, ev.Tests.Failed = sorted(passed), sorted(failed)
 	for _, t := range task.RequiredTests {

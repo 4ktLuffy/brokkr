@@ -1,0 +1,56 @@
+{
+ "cargo": {
+  "expected": {
+   "integration::d": "PASSED",
+   "tests::a": "PASSED",
+   "tests::b": "PASSED"
+  },
+  "log": "running 3 tests\ntest tests::a ... ok\ntest tests::b ... FAILED\ntest tests::c ... ignored\ntest integration::d ... ok\ntest tests::b ... ok\ntest result: FAILED. 2 passed; 1 failed\ntest doc (line 5) ... ok\n"
+ },
+ "googletest": {
+  "expected": {
+   "FormatTest.Args": "PASSED",
+   "PrintfTest.MinusFlag": "PASSED",
+   "PrintfTest.PlusFlag": "FAILED"
+  },
+  "log": "[ RUN      ] PrintfTest.MinusFlag\n[       OK ] PrintfTest.MinusFlag (0 ms)\n[  FAILED  ] PrintfTest.PlusFlag (1 ms)\n1: [       OK ] FormatTest.Args (12 ms)\n[  FAILED  ] 1 test, listed below:\n[  FAILED  ] PrintfTest.PlusFlag\n"
+ },
+ "gotest": {
+  "expected": {
+   "Test With Spaces": "PASSED",
+   "TestA": "PASSED",
+   "TestA/sub_case": "PASSED",
+   "TestB": "PASSED",
+   "TestC": "SKIPPED"
+  },
+  "log": "=== RUN   TestA\n--- PASS: TestA (0.00s)\n    --- PASS: TestA/sub_case (0.00s)\n--- FAIL: TestB (0.12s)\n--- SKIP: TestC (0.00s)\n--- PASS: TestB (0.01s)\n--- PASS: Test With Spaces (0.00s)\nok  \tgithub.com/x/y\t0.5s\n--- PASS: TestNoDuration\n"
+ },
+ "jq": {
+  "expected": {
+   "tests/jqtest": "FAILED",
+   "tests/mantest": "PASSED",
+   "tests/optionaltest": "PASSED"
+  },
+  "log": "PASS: tests/optionaltest\nFAIL: tests/jqtest\n  PASS: tests/mantest\n# TOTAL: 3\n"
+ },
+ "micropython": {
+  "expected": {
+   "basics/int_big.py": "PASSED",
+   "basics/list.py": "PASSED",
+   "basics/string_format.py": "FAILED",
+   "extmod/vfs_fat.py": "SKIPPED"
+  },
+  "log": "pass  basics/int_big.py\nFAIL  basics/string_format.py\nskip  extmod/vfs_fat.py\npass basics/list.py\n"
+ },
+ "redis": {
+  "expected": {
+   "Big list test": "SKIPPED",
+   "EXPIRE precision": "FAILED",
+   "Flaky one": "SKIPPED",
+   "No duration here": "PASSED",
+   "SET and GET an item": "PASSED",
+   "Timing in seconds": "PASSED"
+  },
+  "log": "[ok]: SET and GET an item (2 ms)\n[err]: EXPIRE precision in tests/unit/expire.tcl\n[skip]: Big list test\n[ok]: No duration here\n[ignore]: Flaky one (5 ms)\n[ok]: Timing in seconds (3 s)\n"
+ }
+}

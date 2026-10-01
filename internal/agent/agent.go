@@ -21,6 +21,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/4ktLuffy/brokkr/internal/codemap"
 	"github.com/4ktLuffy/brokkr/internal/model"
 	"github.com/4ktLuffy/brokkr/internal/route"
 	"github.com/4ktLuffy/brokkr/internal/verify"
@@ -59,7 +60,10 @@ import (
 //	0.9.0  live mode (task.live): a create_file tool for a new regression test,
 //	       and the run is judged by that test (verify.SelfTest). Tasks that are
 //	       not live see the same tools and prompts as 0.8.0.
-const HarnessVersion = "0.9.0"
+//	0.10.0 optional code tools (--code-tools): find_definition, find_usages,
+//	       outline and a post-edit static check. Off by default; off, tools,
+//	       prompt and results are those of 0.9.0.
+const HarnessVersion = "0.10.0"
 
 // Chatter is what the agent needs from a model: *model.Client, or a
 // *route.Router over several.
@@ -91,6 +95,10 @@ type Config struct {
 	// CompactAbove is the estimated prompt size, in tokens, above which older
 	// tool outputs are shortened (see compactor). 0 never shortens.
 	CompactAbove int
+	// CodeTools adds find_definition, find_usages and outline, and a static
+	// check of every edited .py file (codetools.go). Off: tools and behaviour
+	// are exactly those of a run without the flag.
+	CodeTools bool
 }
 
 type Summary struct {
@@ -128,6 +136,7 @@ type Summary struct {
 	LoopWarnings           int            `json:"loop_warnings"`
 	SyntaxErrorsIntroduced int            `json:"syntax_errors_introduced"`
 	CommitNudges           int            `json:"commit_nudges"`
+	StaticWarnings         int            `json:"static_warnings,omitempty"` // CodeTools only
 	Budget                 map[string]int `json:"budget"`
 	PromptTok              int            `json:"prompt_tokens"`
 	OutputTok              int            `json:"completion_tokens"`
@@ -208,6 +217,14 @@ func Run(ctx context.Context, cfg Config, task verify.Task, repoDir, outDir stri
 		}
 	}
 	tools := toolDefs(task.Live)
+	sysPrompt := systemPrompt
+	if cfg.CodeTools {
+		ws.code = codemap.New(ws.root)
+		defer ws.code.Close()
+		ws.code.Warm()
+		tools = withCodeTools(tools)
+		sysPrompt += codeToolsPrompt
+	}
 
 	// Reproduce first, so the model starts from the real failure.
 	// A live task without hidden tests has nothing that must fail yet: its
@@ -246,7 +263,7 @@ func Run(ctx context.Context, cfg Config, task verify.Task, repoDir, outDir stri
 			task.Name, issue, strings.Join(task.Protect, ", "), testOutput(filepath.Join(outDir, "baseline"), baseline))
 	}
 	msgs := []model.Message{
-		{Role: "system", Content: systemPrompt},
+		{Role: "system", Content: sysPrompt},
 		{Role: "user", Content: first},
 	}
 	for _, m := range msgs {
@@ -426,6 +443,9 @@ loop:
 					if msg := ws.syntaxError(path); msg != "" {
 						result += "\n\nWARNING: after this edit the file no longer parses: " + msg + "\nFix this before anything else."
 						sum.SyntaxErrorsIntroduced++
+					} else if msg := ws.staticCheck(path); msg != "" {
+						result += "\n\nWARNING: static check after this edit found problems that were not there before:\n" + msg + "\nThese would fail when the code runs. Fix them unless you are sure they are intended."
+						sum.StaticWarnings++
 					}
 				}
 				if refused {
@@ -583,8 +603,9 @@ func tail(s string, n int) string {
 type workspace struct {
 	root, orig string
 	protect    []string
-	strict     bool   // see Config.StrictEdits
-	newTests   string // live mode: where new regression tests may be created
+	strict     bool           // see Config.StrictEdits
+	newTests   string         // live mode: where new regression tests may be created
+	code       *codemap.Index // CodeTools only
 }
 
 var errRefused = errors.New("refused")
@@ -626,6 +647,8 @@ func (w *workspace) call(name string, args map[string]any) (string, bool) {
 		out, err = w.replace(str("path"), str("old_text"), str("new_text"))
 	case "replace_lines":
 		out, err = w.replaceLines(str("path"), num(args, "start_line"), num(args, "end_line"), str("new_text"))
+	case "find_definition", "find_usages", "outline":
+		out, err = w.codeCall(name, args)
 	case "create_file":
 		if w.newTests == "" {
 			err = fmt.Errorf("%w: unknown tool %q", errRefused, name)

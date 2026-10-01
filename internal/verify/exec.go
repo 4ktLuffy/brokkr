@@ -52,6 +52,9 @@ func Exec(cfg Config, task Task, repoDir, patchPath, cmd string, timeoutS int, o
 	if task.MemMiB > 0 {
 		args = append(args, "--mem-mib", fmt.Sprint(task.MemMiB))
 	}
+	if task.Rootfs != "" {
+		args = append(args, "--rootfs", task.Rootfs)
+	}
 	release, waited, err := acquireSlot(cfg.SlotDir, cfg.Slots)
 	if err != nil {
 		return nil, err

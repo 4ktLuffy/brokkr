@@ -792,3 +792,34 @@ needed and was cancelled, which also ended caffeinate. VM and proxy stopped.
   339 s, with 82 s per run.
 - The overnight 7-agent runs had their sandbox time serialized like this. Their
   verdicts stand (no run timed out), but their wall times are not per-VM costs.
+
+### 09:31 Six agents, Go and C++ targets
+- Six Sonnet agents in separate worktrees (no commits, no hosted models).
+  - Merged: replay (flight recorder) and codemap (code tools + static check).
+    Both were checked by the lead: the replay is XSS-safe by construction, and
+    the static check passed a real-file spot check.
+  - Still running at wrap-up: locate, minimize, mutate, redteam. Their work stays
+    in the brokkr-wt/ worktrees, not merged.
+- Instruction error: I told the agents their worktrees were mounted in the VM.
+  Only the main checkout is. Corrected by message; the main checkout stayed
+  clean.
+- **Go:** SWE-bench Multilingual gin, 8/8 valid.
+  - Per-task environments (5.5 GB for 7) nearly filled the VM disk (3.5 GB
+    free), so environments are now one per repo (1.9 GB).
+  - Copying the warm Go cache took 123 s per run; symlinking it takes 3.5 s.
+    Without a cache the run hit the 900 s limit.
+- **C++:** guest image with a toolchain.
+  - The first build hung 52 min at a dpkg prompt; it is now noninteractive with
+    logged apt output, and builds in 2 min.
+  - The first fmt validation used a binary older than the rootfs field, which
+    silently ignored it ("cmake: command not found"). Rerun: fmt-1683 valid,
+    16 min for the gold run.
+- **Disk:** the VM has 4.4 GB free and the Mac 21 GB (98% full), so the VM disk
+  was not grown. Henos decides what to free.
+- Minimize merged after review: its own tests pass, and its real runs are in
+  the README. Locate (fault localization) finished with an oracle upper bound:
+  the gold file was in the top 10 for 15–17 of 19 tasks, the gold function for
+  7–9. It is NOT merged: its edits to the agent loop overlap codemap's and need
+  a careful merge. Redteam is not merged: it found real breaches, but its fixes
+  change scoring away from SWE-bench's parsers and need re-validation (see the
+  feat/redteam worktree).

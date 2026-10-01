@@ -186,6 +186,104 @@ VM time. 8 concurrent real Django verifies:
 On a bare-metal Linux server, raise the cap toward the core count. That is
 where a VM pool pays off.
 
+## Beyond Python: Go and C++ repositories
+
+Brokkr now verifies fixes in Go and C++ repositories from SWE-bench
+Multilingual (`scripts/ml/prepare.py`). Its log parsers (gotest, cargo,
+googletest, jq, redis, micropython) are ports of SWE-bench's own parsers,
+checked against the originals' output on sample logs.
+
+- **Go:** one environment drive per repository with every Go version and
+  module its tasks need, so the guest runs offline (`GOPROXY=off`,
+  `GOTOOLCHAIN=local`). A warm build cache is symlinked into the guest. That
+  takes 3.5 s; copying it took 123 s. Building the cache compiles test
+  binaries with `go test -c` and never runs them outside a microVM.
+- **C/C++:** a second guest image with gcc 13, cmake, Tcl and autotools
+  (`scripts/build-rootfs-cc.sh`), chosen per task (`"rootfs"`). Its hash is
+  recorded in the evidence. The build runs inside the microVM.
+
+Validity (unpatched FAILs, maintainers' fix PASSes):
+
+| Repo | Tasks | Valid | VM time per gold run |
+|---|---|---|---|
+| gin-gonic/gin (Go) | 8 | 8 | 2.4–8.8 min |
+| fmtlib/fmt (C++) | 2 checked of 11 built | 2 | 16–17 min (cold build on one shared core) |
+
+Not done yet: the other Go repos (caddy, prometheus, hugo, terraform) need
+gigabytes of modules and the VM disk is nearly full; jq and redis build
+during SWE-bench's image setup, which is not in the dataset; Rust; any
+model run on these tasks.
+
+## Flight recorder
+
+`brokkr replay --run RUN_DIR --out replay.html` turns a finished `brokkr fix`
+run into one self-contained HTML page with no network requests. It shows:
+
+- the verdict, and the agent's claim against it, with over-claims highlighted;
+- every turn, with tool calls, edits as diffs, and sandbox runs with their
+  log tails;
+- harness interventions;
+- a chart of prompt size, a tools-over-time strip, the final patch and the
+  evidence.
+
+Run data is embedded as escaped JSON and drawn with `textContent` only, so
+hostile transcript text cannot run script. `--compare B` shows two runs side
+by side. Samples are in `docs/replays/`.
+
+## Does the agent's test pin the fix?
+
+`brokkr mutate --task T.json --repo DIR --patch P --out DIR` breaks the fix in
+small ways and runs only the agent's new tests against each broken version in
+a fresh microVM. Mutations: revert a hunk, flip a comparison, swap and/or,
+negate a condition, change an integer by one, return None, empty a string,
+delete a statement.
+
+- A mutant is killed when a new test that passed with the real fix no longer
+  passes.
+- Surviving mutants are listed in `mutate.md`: they show what the test does not
+  check.
+- On pydantic#13460, the maintainers' tests killed 8 of 8 non-equivalent
+  mutants. A weaker test killed 7 of 8, missing the fallback for unknown types.
+- A score measures how much of the fix the test pins down, not whether the fix
+  is right.
+- `brokkr bundle` shows the score when `mutate.json` is present.
+
+## Patch minimizer
+
+`brokkr minimize --task T.json --repo DIR --patch P --out DIR [--max-runs N]
+[--granularity hunk|line]` shrinks a verified patch to the smallest one that
+still verifies. It runs Zeller's ddmin over hunks (and with `line`, then over
+changed lines), using the real verifier in fresh microVMs as the oracle:
+
+- The full patch must PASS first.
+- A subset that no longer applies counts as FAIL without booting a VM.
+- Verdicts are cached by patch hash.
+- If the run budget ends first, the best verified patch is returned, marked as
+  not proven minimal.
+
+Measured:
+
+- A calc fix bundled with a debug print, a comment, an unused helper and a
+  stray file went from 10 changed lines to the 2-line fix, in 15 VM runs.
+- A past Codestral PASS patch on sympy-19637 went from 8 changed lines to 2.
+- Line mode on real patches has not finished a run yet.
+
+## Code tools (optional)
+
+`--code-tools` adds `find_definition`, `find_usages` and `outline`. They are
+answered from an ast index built with python3 on the host, which never
+imports or runs repository code. After each `.py` edit, a static check
+reports only problems the edit introduced: undefined names, use before
+definition and duplicate arguments. Offline results:
+
+- On the patched files of 209 historical tasks (285 files), the check reported
+  nothing.
+- `find_definition` found 402 of 403 gold-modified functions by qualified
+  name.
+- `find_usages` pointed at another changed file in 22 of 33 multi-file fixes.
+
+No model has been run with the tools yet.
+
 ## Model routing
 
 `brokkr fix --routes dev/routes.json` sends the agent's model calls through a
